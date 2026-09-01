@@ -7,6 +7,7 @@
   packages = [
     pkgs.git
     pkgs.biome
+    pkgs.go-task
   ];
 
   languages = {
@@ -15,7 +16,10 @@
 
       lsp.enable = true;
 
-      corepack.enable = true;
+      pnpm = {
+        enable = true;
+        package = pkgs.pnpm_10;
+      };
     };
 
     rust = {

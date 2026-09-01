@@ -7,22 +7,19 @@ branding:
 inputs:
   token:
     description: GitHub token used by Versionary SCM integration
-    required: false
-  github-token:
-    description: Deprecated alias for token
-    required: false
+    required: true
   versionary-version:
     description: Versionary npm version or dist-tag
     required: false
-    default: 0.29.0
+    default: 1.2.0
   working-directory:
     description: Working directory containing versionary.jsonc/json
     required: false
     default: .
 outputs:
   action:
-    description: Versionary action taken (noop, pr-prepared, release-published,
-      release-skipped)
+    description: Versionary action taken (noop, stale-run-skipped, pr-prepared,
+      release-published, release-skipped)
   message:
     description: Human-readable result message
   release_created:
@@ -31,12 +28,16 @@ outputs:
     description: Primary release tag (first tag when multiple targets release)
   tag_names:
     description: JSON array of published release tags
+  release_targets:
+    description: Dependency-ordered JSON array of released package targets
   review_url:
-    description: Review request URL when a release PR was prepared
+    description: Primary review request URL when release PRs were prepared
+  review_requests:
+    description: JSON array of prepared or reconciled release review requests
   branch:
-    description: Release branch name when a release PR was prepared
+    description: Primary release branch name when release PRs were prepared
   title:
-    description: Release PR title when a release PR was prepared
+    description: Primary release PR title when release PRs were prepared
 runs:
   using: node24
   main: action/index.js

@@ -7,9 +7,11 @@ interface RunJsonResult {
   message?: string;
   releaseCreated?: boolean;
   tagNames?: unknown;
+  releaseTargets?: unknown;
   reviewUrl?: string;
   branch?: string;
   title?: string;
+  reviewRequests?: unknown;
 }
 
 function getInput(name: string): string {
@@ -63,6 +65,28 @@ function getRemoteRefSha(cwd: string, ref: string): string | null {
   }
 }
 
+function hasVersionaryReleaseMarker(cwd: string, sha: string): boolean {
+  try {
+    const message = runGit(cwd, ["show", "-s", "--format=%B", sha]);
+    return /^Versionary-Release:\s*true$/imu.test(message);
+  } catch {
+    return false;
+  }
+}
+
+function isAncestor(
+  cwd: string,
+  ancestor: string,
+  descendant: string,
+): boolean {
+  try {
+    runGit(cwd, ["merge-base", "--is-ancestor", ancestor, descendant]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function setOutput(name: string, value: string): void {
   const outputPath = process.env.GITHUB_OUTPUT;
   if (!outputPath) {
@@ -77,11 +101,9 @@ function setOutput(name: string, value: string): void {
 }
 
 function main(): void {
-  const token = getInput("token") || getInput("github-token");
+  const token = getInput("token");
   if (!token) {
-    throw new Error(
-      "Input required and not supplied: token (or deprecated github-token).",
-    );
+    throw new Error("Input required and not supplied: token.");
   }
 
   const versionaryVersion = getInput("versionary-version") || "0.7.0";
@@ -126,25 +148,33 @@ function main(): void {
   ) {
     const remoteSha = getRemoteRefSha(cwd, ref);
     if (remoteSha && remoteSha !== sha) {
-      const staleMessage =
-        `Skipping stale push run for ${sha.slice(0, 7)}; ` +
-        `${ref} now points to ${remoteSha.slice(0, 7)}.`;
-      const stalePayload = {
-        action: "stale-run-skipped",
-        message: staleMessage,
-        releaseCreated: false,
-        tagNames: [],
-      };
-      process.stdout.write(`${JSON.stringify(stalePayload)}\n`);
-      setOutput("action", stalePayload.action);
-      setOutput("message", stalePayload.message);
-      setOutput("release_created", "false");
-      setOutput("tag_name", "");
-      setOutput("tag_names", "[]");
-      setOutput("review_url", "");
-      setOutput("branch", "");
-      setOutput("title", "");
-      return;
+      // Descendant pushes must not turn an otherwise valid release into a
+      // recovery cycle.
+      const releaseCanPublish =
+        hasVersionaryReleaseMarker(cwd, sha) && isAncestor(cwd, sha, remoteSha);
+      if (!releaseCanPublish) {
+        const staleMessage =
+          `Skipping stale push run for ${sha.slice(0, 7)}; ` +
+          `${ref} now points to ${remoteSha.slice(0, 7)}.`;
+        const stalePayload = {
+          action: "stale-run-skipped",
+          message: staleMessage,
+          releaseCreated: false,
+          tagNames: [],
+        };
+        process.stdout.write(`${JSON.stringify(stalePayload)}\n`);
+        setOutput("action", stalePayload.action);
+        setOutput("message", stalePayload.message);
+        setOutput("release_created", "false");
+        setOutput("tag_name", "");
+        setOutput("tag_names", "[]");
+        setOutput("release_targets", "[]");
+        setOutput("review_url", "");
+        setOutput("review_requests", "[]");
+        setOutput("branch", "");
+        setOutput("title", "");
+        return;
+      }
     }
   }
 
@@ -191,7 +221,19 @@ function main(): void {
   setOutput("release_created", releaseCreated);
   setOutput("tag_name", firstTag);
   setOutput("tag_names", JSON.stringify(tagNames));
+  setOutput(
+    "release_targets",
+    JSON.stringify(
+      Array.isArray(payload.releaseTargets) ? payload.releaseTargets : [],
+    ),
+  );
   setOutput("review_url", payload.reviewUrl ?? "");
+  setOutput(
+    "review_requests",
+    JSON.stringify(
+      Array.isArray(payload.reviewRequests) ? payload.reviewRequests : [],
+    ),
+  );
   setOutput("branch", payload.branch ?? "");
   setOutput("title", payload.title ?? "");
 }

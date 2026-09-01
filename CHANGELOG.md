@@ -1,5 +1,70 @@
 # Changelog
 
+## [1.2.0](https://github.com/jolars/versionary/compare/v1.1.0...v1.2.0) (2026-09-01)
+
+### Features
+- **r:** display full x.y.z versions ([`1dbb957`](https://github.com/jolars/versionary/commit/1dbb957ba77a0c92ed0d1c22d850808ae7b816a1))
+
+### Bug Fixes
+- **action:** publish stale release commits ([`4c8ac29`](https://github.com/jolars/versionary/commit/4c8ac291bfe21aea5c355f465449ddd99acb87e0))
+
+## [1.1.0](https://github.com/jolars/versionary/compare/v1.0.1...v1.1.0) (2026-08-28)
+
+### Features
+- expose ordered release targets ([`4c35593`](https://github.com/jolars/versionary/commit/4c3559311f0eb53918ac61bdc31cbf5f61c0260b))
+- add separate package release PRs ([`afd0310`](https://github.com/jolars/versionary/commit/afd03100d99e812fd353e7d90c374e6f7da62226))
+- add cmake version strategy ([`8441c03`](https://github.com/jolars/versionary/commit/8441c030e5ff15a7bc291031d1882d63478755c1))
+- **artifact-rules:** add expected match counts ([`6edddd1`](https://github.com/jolars/versionary/commit/6edddd1a2dee5603953d400b13996439eec64f77))
+
+### Bug Fixes
+- **release:** recover untagged pending releases ([`91928b7`](https://github.com/jolars/versionary/commit/91928b76918f3e2f57d5f442f398612cc4a09f6b))
+- **action:** ship stale-run guard ([`f139bd5`](https://github.com/jolars/versionary/commit/f139bd5a3f831678cc240ea12c1a5f16d72b8b85))
+- **ci:** refresh nixpkgs lock ([`4306b74`](https://github.com/jolars/versionary/commit/4306b74a137b2812711a624f6393d44eef907db7))
+
+## [1.0.1](https://github.com/jolars/versionary/compare/v1.0.0...v1.0.1) (2026-08-12)
+
+### Bug Fixes
+- report root release from its own package plan ([`2ff8149`](https://github.com/jolars/versionary/commit/2ff8149e32fa802dfe2942321a8c23a813fef0f7))
+
+## [1.0.0](https://github.com/jolars/versionary/compare/v0.32.0...v1.0.0) (2026-08-07)
+
+### Breaking changes
+- remove deprecated APIs and config keys ([`ae5d264`](https://github.com/jolars/versionary/commit/ae5d2647c6d7d2e5856f5819a8686bb05ed4fe08))
+- force releases for stale published dependencies ([`4e4f4b9`](https://github.com/jolars/versionary/commit/4e4f4b9a7d26aa8eba53648a573468b3efdc9344)), closes [#77](https://github.com/jolars/versionary/issues/77)
+
+### Features
+- remove deprecated APIs and config keys ([`ae5d264`](https://github.com/jolars/versionary/commit/ae5d2647c6d7d2e5856f5819a8686bb05ed4fe08))
+- force releases for stale published dependencies ([`4e4f4b9`](https://github.com/jolars/versionary/commit/4e4f4b9a7d26aa8eba53648a573468b3efdc9344)), closes [#77](https://github.com/jolars/versionary/issues/77)
+- **plan:** support Release-As footer to pin next version ([`10c2914`](https://github.com/jolars/versionary/commit/10c29141bca14c74601d10c1bb236b108c5cc396))
+
+## [0.32.0](https://github.com/jolars/versionary/compare/v0.31.0...v0.32.0) (2026-07-04)
+
+### Features
+- **artifact-rules:** support templated regex replacement ([`1bc89e5`](https://github.com/jolars/versionary/commit/1bc89e5cbf2bf3e6135ae7f50c737a843217edc0)), closes [#68](https://github.com/jolars/versionary/issues/68)
+
+### Bug Fixes
+- **pr:** honor r-news format in single-package PR body ([`d8004c0`](https://github.com/jolars/versionary/commit/d8004c047d6099d2849b0a34bea4bcb94398106a))
+- **deps:** bump vite to 8 and esbuild to 0.28.1 ([`b571e22`](https://github.com/jolars/versionary/commit/b571e2226e2afdf8ecc2f34836fd20e9166fec81))
+
+## [0.31.0](https://github.com/jolars/versionary/compare/v0.30.0...v0.31.0) (2026-06-14)
+
+### Features
+- **strategies:** add julia strategy ([`3d55271`](https://github.com/jolars/versionary/commit/3d552712d39615098bf937809efd87fb681f3f0d))
+- add `allow-stable-major` to package-level options ([`73eab63`](https://github.com/jolars/versionary/commit/73eab63d5c405df1445c51596c49dc19c094a50e))
+
+### Bug Fixes
+- handle R NEWS.md convention for manual releases ([`7aced72`](https://github.com/jolars/versionary/commit/7aced726d85a959d886915eac182cf6a7a61978b))
+- add missing follows entry in schema ([`9244e49`](https://github.com/jolars/versionary/commit/9244e49a20c97469f3fcfaf67c0c8a0abb7d7685))
+
+## [0.30.0](https://github.com/jolars/versionary/compare/v0.29.0...v0.30.0) (2026-06-11)
+
+### Features
+- add top-level `exclude-paths` ([`9ef29fe`](https://github.com/jolars/versionary/commit/9ef29fec8f1ba485f475afa58e2079ed8ed81b9f))
+
+### Bug Fixes
+- **release:** publish only the current PR's targets, not the full baseline ([`6030fcb`](https://github.com/jolars/versionary/commit/6030fcbe42d5010b473b365466d38790e59e4881))
+- **release:** stop re-posting reference comments for existing releases ([`8aa37e5`](https://github.com/jolars/versionary/commit/8aa37e5db7fb560827f3a085689b903b7da1d3fb))
+
 ## [0.29.0](https://github.com/jolars/versionary/compare/v0.28.2...v0.29.0) (2026-06-04)
 
 This release features a redesign of the manual changelog entries, deprecating

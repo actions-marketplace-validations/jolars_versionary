@@ -2,11 +2,11 @@ import { describe, expect, it } from "vitest";
 import { parseConventionalCommitMessage } from "../src/git/commits.js";
 import {
   renderReleaseNotesSection,
-  renderSimpleChangelog,
+  renderReleasePlanChangelog,
 } from "../src/release/changelog.js";
-import type { SimplePlan } from "../src/release/plan.js";
+import type { ReleasePlan } from "../src/release/plan.js";
 
-function makePlan(): SimplePlan {
+function makePlan(): ReleasePlan {
   return {
     mode: "simple",
     releaseType: "minor",
@@ -44,7 +44,7 @@ describe("simple changelog rendering", () => {
     try {
       process.env.GITHUB_SERVER_URL = "https://github.com";
       process.env.GITHUB_REPOSITORY = "jolars/versionary";
-      changelog = renderSimpleChangelog(makePlan());
+      changelog = renderReleasePlanChangelog(makePlan());
     } finally {
       process.env.GITHUB_SERVER_URL = prevServer;
       process.env.GITHUB_REPOSITORY = prevRepo;
@@ -79,7 +79,7 @@ describe("simple changelog rendering", () => {
         ...parseConventionalCommitMessage("perf: speed up parser"),
         hash: "9999999",
       });
-      changelog = renderSimpleChangelog(plan);
+      changelog = renderReleasePlanChangelog(plan);
     } finally {
       process.env.GITHUB_SERVER_URL = prevServer;
       process.env.GITHUB_REPOSITORY = prevRepo;
@@ -107,7 +107,7 @@ describe("simple changelog rendering", () => {
         ...parseConventionalCommitMessage("revert: feat: add feature"),
         hash: "5555555",
       });
-      changelog = renderSimpleChangelog(plan);
+      changelog = renderReleasePlanChangelog(plan);
     } finally {
       process.env.GITHUB_SERVER_URL = prevServer;
       process.env.GITHUB_REPOSITORY = prevRepo;
@@ -134,7 +134,7 @@ describe("simple changelog rendering", () => {
           hash: "6666666",
         },
       ];
-      changelog = renderSimpleChangelog(plan);
+      changelog = renderReleasePlanChangelog(plan);
     } finally {
       process.env.GITHUB_SERVER_URL = prevServer;
       process.env.GITHUB_REPOSITORY = prevRepo;
@@ -164,7 +164,7 @@ describe("simple changelog rendering", () => {
       };
       const plan = makePlan();
       plan.commits = [feature, revert];
-      changelog = renderSimpleChangelog(plan);
+      changelog = renderReleasePlanChangelog(plan);
     } finally {
       process.env.GITHUB_SERVER_URL = prevServer;
       process.env.GITHUB_REPOSITORY = prevRepo;
@@ -207,7 +207,7 @@ describe("simple changelog rendering", () => {
           ],
         },
       ];
-      changelog = renderSimpleChangelog(plan);
+      changelog = renderReleasePlanChangelog(plan);
     } finally {
       process.env.GITHUB_SERVER_URL = prevServer;
       process.env.GITHUB_REPOSITORY = prevRepo;
@@ -278,7 +278,7 @@ describe("simple changelog rendering", () => {
           ],
         },
       ];
-      changelog = renderSimpleChangelog(plan);
+      changelog = renderReleasePlanChangelog(plan);
     } finally {
       process.env.GITHUB_SERVER_URL = prevServer;
       process.env.GITHUB_REPOSITORY = prevRepo;
@@ -288,6 +288,93 @@ describe("simple changelog rendering", () => {
     expect(changelog).toContain("### Dependencies");
     expect(changelog).toContain("- updated crates/panache-formatter to v0.2.1");
     expect(changelog).toContain("- updated crates/panache-parser to v0.4.2");
+  });
+
+  it("heads the root changelog with root's own version, not the aggregate", () => {
+    const prevServer = process.env.GITHUB_SERVER_URL;
+    const prevRepo = process.env.GITHUB_REPOSITORY;
+    let changelog = "";
+    try {
+      process.env.GITHUB_SERVER_URL = "https://github.com";
+      process.env.GITHUB_REPOSITORY = "jolars/panache";
+      const rootFix = {
+        ...parseConventionalCommitMessage("fix(cli): don't wait on stdin"),
+        hash: "c7170eb1",
+      };
+      const siblingFeat = {
+        ...parseConventionalCommitMessage("feat(parser): add FrameVerdict"),
+        hash: "a2d74463",
+      };
+      const plan = makePlan();
+      // The aggregate folds the sibling's `feat` in and applies it to root's
+      // number, so it reads 3.4.0 while root itself only earns a patch.
+      plan.releaseType = "minor";
+      plan.currentVersion = "3.3.0";
+      plan.nextVersion = "3.4.0";
+      plan.commits = [rootFix, siblingFeat];
+      plan.packages = [
+        {
+          path: ".",
+          releaseType: "patch",
+          currentVersion: "3.3.0",
+          nextVersion: "3.3.1",
+          bumpReason: "direct",
+          commits: [rootFix],
+        },
+        {
+          path: "crates/panache-parser",
+          releaseType: "minor",
+          currentVersion: "0.25.0",
+          nextVersion: "0.26.0",
+          bumpReason: "direct",
+          commits: [siblingFeat],
+        },
+      ];
+      changelog = renderReleasePlanChangelog(plan);
+    } finally {
+      process.env.GITHUB_SERVER_URL = prevServer;
+      process.env.GITHUB_REPOSITORY = prevRepo;
+    }
+
+    expect(changelog).toContain(
+      "## [3.3.1](https://github.com/jolars/panache/compare/v3.3.0...v3.3.1)",
+    );
+    expect(changelog).not.toContain("3.4.0");
+    // The sibling's commit is not root's, so it must not appear under root.
+    expect(changelog).not.toContain("### Features");
+    expect(changelog).not.toContain("FrameVerdict");
+    expect(changelog).toContain("### Bug Fixes");
+    expect(changelog).toContain("don't wait on stdin");
+  });
+
+  it("renders no root changelog section when only siblings release", () => {
+    const plan = makePlan();
+    plan.nextVersion = "3.4.0";
+    plan.commits = [];
+    plan.packages = [
+      {
+        path: ".",
+        releaseType: null,
+        currentVersion: "3.3.0",
+        nextVersion: null,
+        commits: [],
+      },
+      {
+        path: "crates/panache-parser",
+        releaseType: "minor",
+        currentVersion: "0.25.0",
+        nextVersion: "0.26.0",
+        bumpReason: "direct",
+        commits: [
+          {
+            ...parseConventionalCommitMessage("feat(parser): add FrameVerdict"),
+            hash: "a2d74463",
+          },
+        ],
+      },
+    ];
+
+    expect(renderReleasePlanChangelog(plan)).toBe("");
   });
 
   it("deduplicates root changelog commits by hash when commit ranges overlap", () => {
@@ -305,7 +392,7 @@ describe("simple changelog rendering", () => {
       plan.currentVersion = "2.35.0";
       plan.nextVersion = "2.36.0";
       plan.commits = [duplicate, duplicate];
-      changelog = renderSimpleChangelog(plan);
+      changelog = renderReleasePlanChangelog(plan);
     } finally {
       process.env.GITHUB_SERVER_URL = prevServer;
       process.env.GITHUB_REPOSITORY = prevRepo;
@@ -332,7 +419,7 @@ describe("simple changelog rendering", () => {
           hash: "1a7d009",
         },
       ];
-      changelog = renderSimpleChangelog(plan);
+      changelog = renderReleasePlanChangelog(plan);
     } finally {
       process.env.GITHUB_SERVER_URL = prevServer;
       process.env.GITHUB_REPOSITORY = prevRepo;
@@ -361,7 +448,7 @@ describe("simple changelog rendering", () => {
           hash: "1a7d009",
         },
       ];
-      changelog = renderSimpleChangelog(plan);
+      changelog = renderReleasePlanChangelog(plan);
     } finally {
       process.env.GITHUB_SERVER_URL = prevServer;
       process.env.GITHUB_REPOSITORY = prevRepo;
@@ -383,5 +470,69 @@ describe("simple changelog rendering", () => {
 
     expect(section).toContain("### Dependencies");
     expect(section).toContain("- updated . to v1.1.0");
+  });
+
+  it("lists non-releasable commits when a forced bump has nothing else to show", () => {
+    const section = renderReleaseNotesSection({
+      currentVersion: "0.1.0",
+      nextVersion: "0.1.1",
+      commits: [
+        {
+          ...parseConventionalCommitMessage(
+            "refactor: upgrade rowan to 0.17.0",
+          ),
+          hash: "7777777",
+        },
+        {
+          ...parseConventionalCommitMessage("docs: describe the new API"),
+          hash: "8888888",
+        },
+      ],
+    });
+
+    expect(section).toContain("### Other changes");
+    expect(section).toContain("- upgrade rowan to 0.17.0 (");
+    expect(section).toContain("- describe the new API (");
+  });
+
+  it("omits Other changes when the release already has content", () => {
+    const section = renderReleaseNotesSection({
+      currentVersion: "0.1.0",
+      nextVersion: "0.2.0",
+      commits: [
+        {
+          ...parseConventionalCommitMessage("feat: add feature"),
+          hash: "3333333",
+        },
+        {
+          ...parseConventionalCommitMessage(
+            "refactor: upgrade rowan to 0.17.0",
+          ),
+          hash: "7777777",
+        },
+      ],
+    });
+
+    expect(section).toContain("### Features");
+    expect(section).not.toContain("### Other changes");
+  });
+
+  it("omits Other changes when a dependency update is already listed", () => {
+    const section = renderReleaseNotesSection({
+      currentVersion: "0.1.0",
+      nextVersion: "0.1.1",
+      commits: [
+        {
+          ...parseConventionalCommitMessage(
+            "refactor: upgrade rowan to 0.17.0",
+          ),
+          hash: "7777777",
+        },
+      ],
+      dependencies: [{ name: "crates/a", version: "0.1.1" }],
+    });
+
+    expect(section).toContain("### Dependencies");
+    expect(section).not.toContain("### Other changes");
   });
 });

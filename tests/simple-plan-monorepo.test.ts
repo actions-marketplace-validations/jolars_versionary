@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { createSimplePlan } from "../src/release/plan.js";
+import { createReleasePlan } from "../src/release/plan.js";
 
 const tempDirs: string[] = [];
 
@@ -72,7 +72,7 @@ describe("simple monorepo planning", () => {
     git(cwd, "add", "packages/b/index.ts");
     git(cwd, "commit", "-m", "fix: patch package b");
 
-    const plan = createSimplePlan(cwd);
+    const plan = createReleasePlan(cwd);
     expect(plan.packages).toHaveLength(2);
     const packageA = plan.packages?.find((pkg) => pkg.path === "packages/a");
     const packageB = plan.packages?.find((pkg) => pkg.path === "packages/b");
@@ -80,6 +80,50 @@ describe("simple monorepo planning", () => {
     expect(packageA?.nextVersion).toBe("1.1.0");
     expect(packageB?.releaseType).toBe("patch");
     expect(packageB?.nextVersion).toBe("1.0.1");
+  });
+
+  it("honors per-package allow-stable-major override on breaking bumps", () => {
+    const cwd = makeTempDir();
+    git(cwd, "init");
+    git(cwd, "config", "user.name", "Test User");
+    git(cwd, "config", "user.email", "test@example.com");
+
+    write(cwd, "version.txt", "0.1.0\n");
+    write(
+      cwd,
+      "versionary.jsonc",
+      JSON.stringify({
+        version: 1,
+        "monorepo-mode": "independent",
+        packages: {
+          "packages/a": {
+            "allow-stable-major": true,
+          },
+          "packages/b": {},
+        },
+      }),
+    );
+    write(cwd, "packages/a/index.ts", "export const a = 1;\n");
+    write(cwd, "packages/b/index.ts", "export const b = 1;\n");
+    git(cwd, "add", ".");
+    git(cwd, "commit", "-m", "chore: initial");
+    git(cwd, "tag", "v0.1.0");
+
+    write(cwd, "packages/a/index.ts", "export const a = 2;\n");
+    git(cwd, "add", "packages/a/index.ts");
+    git(cwd, "commit", "-m", "feat!: break package a");
+
+    write(cwd, "packages/b/index.ts", "export const b = 2;\n");
+    git(cwd, "add", "packages/b/index.ts");
+    git(cwd, "commit", "-m", "feat!: break package b");
+
+    const plan = createReleasePlan(cwd);
+    const packageA = plan.packages?.find((pkg) => pkg.path === "packages/a");
+    const packageB = plan.packages?.find((pkg) => pkg.path === "packages/b");
+    expect(packageA?.releaseType).toBe("major");
+    expect(packageA?.nextVersion).toBe("1.0.0");
+    expect(packageB?.releaseType).toBe("major");
+    expect(packageB?.nextVersion).toBe("0.2.0");
   });
 
   it("uses one shared bump in fixed monorepo mode", () => {
@@ -115,7 +159,7 @@ describe("simple monorepo planning", () => {
     git(cwd, "add", "packages/b/index.ts");
     git(cwd, "commit", "-m", "fix: patch package b");
 
-    const plan = createSimplePlan(cwd);
+    const plan = createReleasePlan(cwd);
     expect(plan.releaseType).toBe("minor");
     expect(plan.nextVersion).toBe("2.1.0");
     expect(plan.packages?.every((pkg) => pkg.releaseType === "minor")).toBe(
@@ -124,6 +168,62 @@ describe("simple monorepo planning", () => {
     expect(plan.packages?.every((pkg) => pkg.nextVersion === "2.1.0")).toBe(
       true,
     );
+  });
+
+  it("records dependencies added to a fixed-mode release", () => {
+    const cwd = makeTempDir();
+    git(cwd, "init");
+    git(cwd, "config", "user.name", "Test User");
+    git(cwd, "config", "user.email", "test@example.com");
+
+    write(
+      cwd,
+      "crates/a-app/Cargo.toml",
+      [
+        "[package]",
+        'name = "a-app"',
+        'version = "1.0.0"',
+        "",
+        "[dependencies]",
+        'z-core = { path = "../z-core", version = "1.0.0" }',
+        "",
+      ].join("\n"),
+    );
+    write(cwd, "crates/a-app/src/lib.rs", "pub fn app() {}\n");
+    write(
+      cwd,
+      "crates/z-core/Cargo.toml",
+      ["[package]", 'name = "z-core"', 'version = "1.0.0"', ""].join("\n"),
+    );
+    write(cwd, "crates/z-core/src/lib.rs", "pub fn core() {}\n");
+    write(
+      cwd,
+      "versionary.jsonc",
+      JSON.stringify({
+        version: 1,
+        "release-type": "rust",
+        "version-file": "Cargo.toml",
+        "monorepo-mode": "fixed",
+        packages: {
+          "crates/a-app": {},
+          "crates/z-core": {},
+        },
+      }),
+    );
+    git(cwd, "add", ".");
+    git(cwd, "commit", "-m", "chore: initial");
+    git(cwd, "tag", "v1.0.0");
+
+    write(cwd, "crates/a-app/src/lib.rs", "pub fn app_v2() {}\n");
+    git(cwd, "add", "crates/a-app/src/lib.rs");
+    git(cwd, "commit", "-m", "feat: update app");
+
+    const plan = createReleasePlan(cwd);
+    const app = plan.packages?.find((pkg) => pkg.path === "crates/a-app");
+    const core = plan.packages?.find((pkg) => pkg.path === "crates/z-core");
+    expect(app?.nextVersion).toBe("1.1.0");
+    expect(core?.nextVersion).toBe("1.1.0");
+    expect(app?.dependencySourcePaths).toEqual(["crates/z-core"]);
   });
 
   it("auto-includes root for fixed-mode baseline without listing it in packages", () => {
@@ -155,7 +255,7 @@ describe("simple monorepo planning", () => {
     git(cwd, "add", "packages/a/index.ts");
     git(cwd, "commit", "-m", "feat: add package a feature");
 
-    const plan = createSimplePlan(cwd);
+    const plan = createReleasePlan(cwd);
     expect(plan.currentVersion).toBe("2.0.0");
     expect(plan.nextVersion).toBe("2.1.0");
     expect(plan.packages?.find((pkg) => pkg.path === ".")).toBeUndefined();
@@ -231,7 +331,7 @@ describe("simple monorepo planning", () => {
     git(cwd, "commit", "-m", "fix(editors): trigger patch bump");
     git(cwd, "tag", "panache-code-v2.34.2");
 
-    const plan = createSimplePlan(cwd);
+    const plan = createReleasePlan(cwd);
     const editorsCode = plan.packages?.find(
       (pkg) => pkg.path === "editors/code",
     );
@@ -267,7 +367,7 @@ describe("simple monorepo planning", () => {
     git(cwd, "add", ".");
     git(cwd, "commit", "-m", "fix: second release commit");
 
-    const plan = createSimplePlan(cwd);
+    const plan = createReleasePlan(cwd);
     expect(plan.releaseType).toBe("patch");
     expect(plan.nextVersion).toBe("1.0.1");
     expect(plan.commits).toHaveLength(1);
@@ -297,7 +397,7 @@ describe("simple monorepo planning", () => {
     git(cwd, "add", "src/index.ts");
     git(cwd, "commit", "-m", "feat!: breaking change");
 
-    const defaultPlan = createSimplePlan(cwd);
+    const defaultPlan = createReleasePlan(cwd);
     expect(defaultPlan.releaseType).toBe("major");
     expect(defaultPlan.nextVersion).toBe("0.5.0");
 
@@ -309,7 +409,7 @@ describe("simple monorepo planning", () => {
         "allow-stable-major": true,
       }),
     );
-    const optedInPlan = createSimplePlan(cwd);
+    const optedInPlan = createReleasePlan(cwd);
     expect(optedInPlan.releaseType).toBe("major");
     expect(optedInPlan.nextVersion).toBe("1.0.0");
   });
@@ -348,11 +448,97 @@ describe("simple monorepo planning", () => {
     git(cwd, "add", "packages/a/index.ts");
     git(cwd, "commit", "-m", "fix: package source update");
 
-    const plan = createSimplePlan(cwd);
+    const plan = createReleasePlan(cwd);
     const packageA = plan.packages?.find((pkg) => pkg.path === "packages/a");
     expect(packageA?.releaseType).toBe("patch");
     expect(packageA?.commits.map((commit) => commit.subject)).toEqual([
       "fix: package source update",
+    ]);
+  });
+
+  it("unions top-level exclude-paths with per-package exclude-paths", () => {
+    const cwd = makeTempDir();
+    git(cwd, "init");
+    git(cwd, "config", "user.name", "Test User");
+    git(cwd, "config", "user.email", "test@example.com");
+
+    write(cwd, "version.txt", "1.0.0\n");
+    write(
+      cwd,
+      "versionary.jsonc",
+      JSON.stringify({
+        version: 1,
+        "monorepo-mode": "independent",
+        "exclude-paths": ["docs"],
+        packages: {
+          "packages/a": {
+            "exclude-paths": ["generated"],
+          },
+        },
+      }),
+    );
+    write(cwd, "packages/a/index.ts", "export const a = 1;\n");
+    write(cwd, "packages/a/docs/readme.md", "# docs\n");
+    write(cwd, "packages/a/generated/data.json", '{ "ok": true }\n');
+    git(cwd, "add", ".");
+    git(cwd, "commit", "-m", "chore: initial");
+    git(cwd, "tag", "v1.0.0");
+
+    // Excluded by the top-level list.
+    write(cwd, "packages/a/docs/readme.md", "# docs updated\n");
+    git(cwd, "add", "packages/a/docs/readme.md");
+    git(cwd, "commit", "-m", "feat: docs update");
+
+    // Excluded by the package's own list.
+    write(cwd, "packages/a/generated/data.json", '{ "ok": false }\n');
+    git(cwd, "add", "packages/a/generated/data.json");
+    git(cwd, "commit", "-m", "feat: generated update");
+
+    write(cwd, "packages/a/index.ts", "export const a = 2;\n");
+    git(cwd, "add", "packages/a/index.ts");
+    git(cwd, "commit", "-m", "fix: package source update");
+
+    const plan = createReleasePlan(cwd);
+    const packageA = plan.packages?.find((pkg) => pkg.path === "packages/a");
+    expect(packageA?.releaseType).toBe("patch");
+    expect(packageA?.commits.map((commit) => commit.subject)).toEqual([
+      "fix: package source update",
+    ]);
+  });
+
+  it("applies top-level exclude-paths to a single-package repository", () => {
+    const cwd = makeTempDir();
+    git(cwd, "init");
+    git(cwd, "config", "user.name", "Test User");
+    git(cwd, "config", "user.email", "test@example.com");
+
+    write(cwd, "version.txt", "1.0.0\n");
+    write(
+      cwd,
+      "versionary.jsonc",
+      JSON.stringify({
+        version: 1,
+        "exclude-paths": ["docs"],
+      }),
+    );
+    write(cwd, "src/index.ts", "export const a = 1;\n");
+    write(cwd, "docs/readme.md", "# docs\n");
+    git(cwd, "add", ".");
+    git(cwd, "commit", "-m", "chore: initial");
+    git(cwd, "tag", "v1.0.0");
+
+    write(cwd, "docs/readme.md", "# docs updated\n");
+    git(cwd, "add", "docs/readme.md");
+    git(cwd, "commit", "-m", "feat: docs update");
+
+    write(cwd, "src/index.ts", "export const a = 2;\n");
+    git(cwd, "add", "src/index.ts");
+    git(cwd, "commit", "-m", "fix: source update");
+
+    const plan = createReleasePlan(cwd);
+    expect(plan.releaseType).toBe("patch");
+    expect(plan.commits.map((commit) => commit.subject)).toEqual([
+      "fix: source update",
     ]);
   });
 
@@ -423,7 +609,7 @@ describe("simple monorepo planning", () => {
     git(cwd, "add", "crates/a/src/lib.rs");
     git(cwd, "commit", "-m", "feat: update crate a");
 
-    const plan = createSimplePlan(cwd);
+    const plan = createReleasePlan(cwd);
     const a = plan.packages?.find((pkg) => pkg.path === "crates/a");
     const b = plan.packages?.find((pkg) => pkg.path === "crates/b");
 
@@ -491,7 +677,7 @@ describe("simple monorepo planning", () => {
               {
                 type: "toml",
                 path: "extension.toml",
-                jsonpath: "$.version",
+                "field-path": "$.version",
               },
             ],
           },
@@ -507,7 +693,7 @@ describe("simple monorepo planning", () => {
     git(cwd, "add", "crates/core/src/lib.rs");
     git(cwd, "commit", "-m", "feat: update core");
 
-    const plan = createSimplePlan(cwd);
+    const plan = createReleasePlan(cwd);
     const zed = plan.packages?.find((pkg) => pkg.path === "editors/zed");
     expect(zed?.releaseType).toBeNull();
     expect(zed?.nextVersion).toBeNull();
@@ -563,7 +749,7 @@ describe("simple monorepo planning", () => {
     git(cwd, "add", "src/lib.rs");
     git(cwd, "commit", "-m", "feat: add root feature");
 
-    const plan = createSimplePlan(cwd);
+    const plan = createReleasePlan(cwd);
     const root = plan.packages?.find((pkg) => pkg.path === ".");
     const editor = plan.packages?.find((pkg) => pkg.path === "editors/code");
     expect(root?.releaseType).toBe("minor");
@@ -621,7 +807,7 @@ describe("simple monorepo planning", () => {
     git(cwd, "commit", "-m", "chore: initial");
     git(cwd, "tag", "v1.0.0");
 
-    const plan = createSimplePlan(cwd);
+    const plan = createReleasePlan(cwd);
     const root = plan.packages?.find((pkg) => pkg.path === ".");
     const editor = plan.packages?.find((pkg) => pkg.path === "editors/code");
     expect(root?.nextVersion).toBeNull();
@@ -683,7 +869,7 @@ describe("simple monorepo planning", () => {
     git(cwd, "add", "editors/code/src/index.ts");
     git(cwd, "commit", "-m", "feat(editors): editor feature");
 
-    const plan = createSimplePlan(cwd);
+    const plan = createReleasePlan(cwd);
     const editor = plan.packages?.find((pkg) => pkg.path === "editors/code");
     expect(editor?.releaseType).toBe("minor");
     expect(editor?.nextVersion).toBe("1.1.0");
@@ -745,7 +931,7 @@ describe("simple monorepo planning", () => {
     git(cwd, "add", "editors/code/src/index.ts");
     git(cwd, "commit", "-m", "fix(editors): tiny editor fix");
 
-    const plan = createSimplePlan(cwd);
+    const plan = createReleasePlan(cwd);
     const editor = plan.packages?.find((pkg) => pkg.path === "editors/code");
     expect(editor?.releaseType).toBe("major");
     expect(editor?.nextVersion).toBe("2.0.0");
@@ -825,7 +1011,7 @@ describe("simple monorepo planning", () => {
     git(cwd, "add", "packages/b/index.ts");
     git(cwd, "commit", "-m", "feat: minor b feature");
 
-    const plan = createSimplePlan(cwd);
+    const plan = createReleasePlan(cwd);
     const follower = plan.packages?.find(
       (pkg) => pkg.path === "packages/follower",
     );
@@ -886,7 +1072,7 @@ describe("simple monorepo planning", () => {
     git(cwd, "add", "editors/zed/src/lib.rs");
     git(cwd, "commit", "-m", "feat: zed-only feature");
 
-    const plan = createSimplePlan(cwd);
+    const plan = createReleasePlan(cwd);
     const root = plan.packages?.find((pkg) => pkg.path === ".");
     const zed = plan.packages?.find((pkg) => pkg.path === "editors/zed");
 

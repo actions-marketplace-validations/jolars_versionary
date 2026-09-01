@@ -3,18 +3,17 @@
   "$id": "https://raw.githubusercontent.com/jolars/versionary/main/schemas/config.json",
   "title": "Versionary configuration",
   "type": "object",
-  "required": ["version"],
-  "additionalProperties": false,
   "properties": {
     "$schema": {
       "type": "string"
     },
     "version": {
+      "type": "number",
       "const": 1
     },
     "review-mode": {
       "type": "string",
-      "enum": ["direct", "pr", "review"]
+      "enum": ["direct", "pr"]
     },
     "version-file": {
       "type": "string"
@@ -22,17 +21,24 @@
     "changelog-file": {
       "type": "string"
     },
-    "release-branch": {
-      "type": "string"
+    "changelog-format": {
+      "type": "string",
+      "enum": ["markdown-changelog", "r-news"]
+    },
+    "release-draft": {
+      "type": "boolean"
     },
     "release-reference-comments": {
       "type": "string",
       "enum": ["off", "best-effort", "strict"]
     },
-    "baseline-file": {
+    "release-branch": {
       "type": "string"
     },
-    "next-release-file": {
+    "separate-release-prs": {
+      "type": "boolean"
+    },
+    "baseline-file": {
       "type": "string"
     },
     "bootstrap-sha": {
@@ -51,20 +57,65 @@
     "include-commit-authors": {
       "type": "boolean"
     },
+    "exclude-paths": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
     "release-type": {
-      "type": "string"
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "minItems": 1,
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      ]
     },
     "packages": {
       "type": "object",
+      "propertyNames": {
+        "type": "string",
+        "minLength": 1
+      },
       "additionalProperties": {
         "type": "object",
-        "additionalProperties": false,
         "properties": {
           "release-type": {
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "minItems": 1,
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            ]
           },
           "package-name": {
             "type": "string"
+          },
+          "changelog-file": {
+            "type": "string"
+          },
+          "changelog-format": {
+            "type": "string",
+            "enum": ["markdown-changelog", "r-news"]
+          },
+          "allow-stable-major": {
+            "type": "boolean"
           },
           "exclude-paths": {
             "type": "array",
@@ -81,25 +132,17 @@
                   "properties": {
                     "type": {
                       "type": "string",
-                      "enum": ["json", "toml", "yaml"]
+                      "enum": ["json", "toml", "yaml", "nix"]
                     },
                     "path": {
-                      "type": "string"
+                      "type": "string",
+                      "minLength": 1
                     },
                     "field-path": {
                       "type": "string"
-                    },
-                    "jsonpath": {
-                      "type": "string"
                     }
                   },
-                  "anyOf": [
-                    { "required": ["field-path"] },
-                    { "required": ["jsonpath"] }
-                  ],
-                  "not": {
-                    "required": ["field-path", "jsonpath"]
-                  },
+                  "required": ["type", "path", "field-path"],
                   "additionalProperties": false
                 },
                 {
@@ -110,10 +153,18 @@
                       "const": "regex"
                     },
                     "path": {
-                      "type": "string"
+                      "type": "string",
+                      "minLength": 1
                     },
                     "pattern": {
                       "type": "string"
+                    },
+                    "replacement": {
+                      "type": "string"
+                    },
+                    "expected-matches": {
+                      "type": "integer",
+                      "minimum": 1
                     }
                   },
                   "required": ["type", "path", "pattern"],
@@ -121,9 +172,19 @@
                 }
               ]
             }
+          },
+          "follows": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
           }
-        }
+        },
+        "additionalProperties": false
       }
     }
-  }
+  },
+  "required": ["version"],
+  "additionalProperties": false
 }

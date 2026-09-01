@@ -17,6 +17,7 @@ interface MockGitHubApi {
   issues: {
     addLabels: ReturnType<typeof vi.fn>;
     createComment: ReturnType<typeof vi.fn>;
+    listComments: ReturnType<typeof vi.fn>;
   };
   repos: {
     getReleaseByTag: ReturnType<typeof vi.fn>;
@@ -39,6 +40,8 @@ vi.mock("@octokit/rest", () => {
       addLabels: (...args: unknown[]) => mockApi.issues.addLabels(...args),
       createComment: (...args: unknown[]) =>
         mockApi.issues.createComment(...args),
+      listComments: (...args: unknown[]) =>
+        mockApi.issues.listComments(...args),
     };
 
     repos = {
@@ -92,6 +95,7 @@ function createDefaultMockApi(): MockGitHubApi {
     issues: {
       addLabels: vi.fn(async () => ({ data: {} })),
       createComment: vi.fn(async () => ({ data: {} })),
+      listComments: vi.fn(async () => ({ data: [] })),
     },
     repos: {
       getReleaseByTag: vi.fn(async () => ({
@@ -207,6 +211,51 @@ describe("github plugin hardening matrix", () => {
     expect(result).toMatchObject({ number: 34, state: "open" });
   });
 
+  it("lists matching open release PRs under a branch prefix", async () => {
+    process.env.GITHUB_REPOSITORY = "owner/repo";
+    process.env.GITHUB_TOKEN = "token";
+    mockApi.pulls.list.mockResolvedValueOnce({
+      data: [
+        {
+          ...pr(7),
+          title: "release a",
+          head: { ref: "versionary/release/a" },
+          base: { ref: "main" },
+          labels: [{ name: "release" }],
+        },
+        {
+          ...pr(8),
+          title: "unrelated",
+          head: { ref: "feature/example" },
+          base: { ref: "main" },
+          labels: [{ name: "release" }],
+        },
+      ],
+    });
+    const plugin = createGitHubPlugin();
+
+    const result = await plugin.listOpenReviewRequests(
+      {
+        baseBranch: "main",
+        headBranchPrefix: "versionary/release/",
+        labels: ["release"],
+      },
+      { cwd: process.cwd() },
+    );
+
+    expect(result).toEqual([
+      {
+        id: "70",
+        number: 7,
+        url: "https://github.com/owner/repo/pull/7",
+        state: "open",
+        baseBranch: "main",
+        headBranch: "versionary/release/a",
+        title: "release a",
+      },
+    ]);
+  });
+
   it("closes matching open release PR and comments reason", async () => {
     process.env.GITHUB_REPOSITORY = "owner/repo";
     process.env.GITHUB_TOKEN = "token";
@@ -309,34 +358,34 @@ describe("github plugin hardening matrix", () => {
     { labelErrorStatus: 404, shouldFail: false },
     { labelErrorStatus: 422, shouldFail: false },
     { labelErrorStatus: 403, shouldFail: true },
-  ])("hardens label outcomes for status $labelErrorStatus", async ({
-    labelErrorStatus,
-    shouldFail,
-  }) => {
-    process.env.GITHUB_REPOSITORY = "owner/repo";
-    process.env.GITHUB_TOKEN = "token";
-    const plugin = createGitHubPlugin();
+  ])(
+    "hardens label outcomes for status $labelErrorStatus",
+    async ({ labelErrorStatus, shouldFail }) => {
+      process.env.GITHUB_REPOSITORY = "owner/repo";
+      process.env.GITHUB_TOKEN = "token";
+      const plugin = createGitHubPlugin();
 
-    mockApi.issues.addLabels.mockRejectedValueOnce({
-      status: labelErrorStatus,
-      message: "label error",
-    });
-
-    const action = plugin.createOrUpdateReviewRequest?.(reviewInput, {
-      cwd: process.cwd(),
-    });
-
-    if (shouldFail) {
-      await expect(action).rejects.toThrow(
-        "Failed applying labels to pull request #34: [owner/repo base=main head=versionary/release-v1.2.3]",
-      );
-    } else {
-      await expect(action).resolves.toMatchObject({
-        number: 34,
-        state: "open",
+      mockApi.issues.addLabels.mockRejectedValueOnce({
+        status: labelErrorStatus,
+        message: "label error",
       });
-    }
-  });
+
+      const action = plugin.createOrUpdateReviewRequest?.(reviewInput, {
+        cwd: process.cwd(),
+      });
+
+      if (shouldFail) {
+        await expect(action).rejects.toThrow(
+          "Failed applying labels to pull request #34: [owner/repo base=main head=versionary/release-v1.2.3]",
+        );
+      } else {
+        await expect(action).resolves.toMatchObject({
+          number: 34,
+          state: "open",
+        });
+      }
+    },
+  );
 
   it("returns merged state when GitHub response indicates merged pull request", async () => {
     process.env.GITHUB_REPOSITORY = "owner/repo";
@@ -479,23 +528,24 @@ describe("github plugin hardening matrix", () => {
     });
   });
 
-  it.each([
-    403, 422,
-  ])("fails release lookup for non-404 status %s", async (statusCode) => {
-    process.env.GITHUB_REPOSITORY = "owner/repo";
-    process.env.GITHUB_TOKEN = "token";
-    mockApi.repos.getReleaseByTag.mockRejectedValueOnce({
-      status: statusCode,
-      message: "lookup denied",
-    });
-    const plugin = createGitHubPlugin();
+  it.each([403, 422])(
+    "fails release lookup for non-404 status %s",
+    async (statusCode) => {
+      process.env.GITHUB_REPOSITORY = "owner/repo";
+      process.env.GITHUB_TOKEN = "token";
+      mockApi.repos.getReleaseByTag.mockRejectedValueOnce({
+        status: statusCode,
+        message: "lookup denied",
+      });
+      const plugin = createGitHubPlugin();
 
-    await expect(
-      plugin.createReleaseMetadata?.(releaseInput, { cwd: process.cwd() }),
-    ).rejects.toThrow(
-      'Failed checking existing GitHub release for tag "v1.2.3":',
-    );
-  });
+      await expect(
+        plugin.createReleaseMetadata?.(releaseInput, { cwd: process.cwd() }),
+      ).rejects.toThrow(
+        'Failed checking existing GitHub release for tag "v1.2.3":',
+      );
+    },
+  );
 
   it("posts release reference comments for issues and pull requests", async () => {
     process.env.GITHUB_REPOSITORY = "owner/repo";
@@ -528,6 +578,86 @@ describe("github plugin hardening matrix", () => {
       expect.objectContaining({
         issue_number: 2000000001,
         body: "This is included in [version 2.23.0](https://github.com/owner/repo/releases/tag/v2.23.0). :tada:\n\nReleased by [Versionary](https://github.com/jolars/versionary).",
+      }),
+    );
+  });
+
+  it("skips issues already announcing the same release", async () => {
+    process.env.GITHUB_REPOSITORY = "owner/repo";
+    process.env.GITHUB_TOKEN = "token";
+    mockApi.issues.listComments.mockResolvedValueOnce({
+      data: [
+        {
+          body: "This is included in [`dprint-plugin-panache` v0.2.0](https://github.com/owner/repo/releases/tag/dprint-plugin-panache-v0.2.0). :tada:\n\nReleased by [Versionary](https://github.com/jolars/versionary).",
+        },
+      ],
+    });
+    const plugin = createGitHubPlugin();
+
+    const result = await plugin.createReleaseReferenceComments?.(
+      {
+        releases: [
+          {
+            name: "dprint-plugin-panache",
+            tag: "dprint-plugin-panache-v0.2.0",
+            version: "0.2.0",
+            releaseUrl:
+              "https://github.com/owner/repo/releases/tag/dprint-plugin-panache-v0.2.0",
+            references: [313],
+          },
+        ],
+        mode: "best-effort",
+      },
+      { cwd: process.cwd() },
+    );
+
+    expect(result).toEqual({ commented: [] });
+    expect(mockApi.issues.createComment).not.toHaveBeenCalled();
+  });
+
+  it("only announces releases not already mentioned on the issue", async () => {
+    process.env.GITHUB_REPOSITORY = "owner/repo";
+    process.env.GITHUB_TOKEN = "token";
+    mockApi.issues.listComments.mockResolvedValueOnce({
+      data: [
+        {
+          body: "This is included in [`alpha` v1.0.0](https://github.com/owner/repo/releases/tag/alpha-v1.0.0). :tada:\n\nReleased by [Versionary](https://github.com/jolars/versionary).",
+        },
+      ],
+    });
+    const plugin = createGitHubPlugin();
+
+    const result = await plugin.createReleaseReferenceComments?.(
+      {
+        releases: [
+          {
+            name: "alpha",
+            tag: "alpha-v1.0.0",
+            version: "1.0.0",
+            releaseUrl:
+              "https://github.com/owner/repo/releases/tag/alpha-v1.0.0",
+            references: [42],
+          },
+          {
+            name: "beta",
+            tag: "beta-v2.0.0",
+            version: "2.0.0",
+            releaseUrl:
+              "https://github.com/owner/repo/releases/tag/beta-v2.0.0",
+            references: [42],
+          },
+        ],
+        mode: "best-effort",
+      },
+      { cwd: process.cwd() },
+    );
+
+    expect(result).toEqual({ commented: [42] });
+    expect(mockApi.issues.createComment).toHaveBeenCalledTimes(1);
+    expect(mockApi.issues.createComment).toHaveBeenCalledWith(
+      expect.objectContaining({
+        issue_number: 42,
+        body: "This is included in [`beta` v2.0.0](https://github.com/owner/repo/releases/tag/beta-v2.0.0). :tada:\n\nReleased by [Versionary](https://github.com/jolars/versionary).",
       }),
     );
   });

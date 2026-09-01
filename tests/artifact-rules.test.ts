@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { applyConfiguredArtifactRules } from "../src/release/artifact-rules.js";
-import type { SimplePlan } from "../src/release/plan.js";
+import type { ReleasePlan } from "../src/release/plan.js";
 import type { VersionaryConfig } from "../src/types/config.js";
 
 const tempDirs: string[] = [];
@@ -26,7 +26,7 @@ function read(cwd: string, relative: string): string {
   return fs.readFileSync(path.join(cwd, relative), "utf8");
 }
 
-function basePlan(pathName = "pkg", nextVersion = "1.2.3"): SimplePlan {
+function basePlan(pathName = "pkg", nextVersion = "1.2.3"): ReleasePlan {
   return {
     mode: "simple",
     releaseType: "minor",
@@ -154,30 +154,12 @@ describe("artifact rules", () => {
     expect(updated).toContain('version = "1.2.3"');
   });
 
-  it("supports deprecated jsonpath alias for field-path", () => {
-    const cwd = makeTempDir();
-    write(cwd, "pkg/meta.json", '{\n  "version": "1.2.2"\n}\n');
-    const config: VersionaryConfig = {
-      version: 1,
-      packages: {
-        pkg: {
-          "extra-files": [
-            { type: "json", path: "meta.json", jsonpath: "$.version" },
-          ],
-        },
-      },
-    };
-
-    applyConfiguredArtifactRules(cwd, config, basePlan());
-    expect(read(cwd, "pkg/meta.json")).toContain('"version": "1.2.3"');
-  });
-
   it("supports scoped npm package keys in dot notation", () => {
     const cwd = makeTempDir();
     write(
       cwd,
       "pkg/package.json",
-      JSON.stringify(
+      `${JSON.stringify(
         {
           name: "panache-pre-commit",
           version: "1.2.2",
@@ -187,7 +169,7 @@ describe("artifact rules", () => {
         },
         null,
         2,
-      ) + "\n",
+      )}\n`,
     );
 
     const config: VersionaryConfig = {
@@ -220,7 +202,7 @@ describe("artifact rules", () => {
     write(
       cwd,
       "pkg/package.json",
-      JSON.stringify(
+      `${JSON.stringify(
         {
           name: "panache-cli",
           version: "1.2.2",
@@ -232,7 +214,7 @@ describe("artifact rules", () => {
         },
         null,
         2,
-      ) + "\n",
+      )}\n`,
     );
 
     const config: VersionaryConfig = {
@@ -326,6 +308,190 @@ describe("artifact rules", () => {
 
     expect(() =>
       applyConfiguredArtifactRules(cwd, config2, basePlan()),
-    ).toThrow(/must match exactly one occurrence/);
+    ).toThrow(/expected 1 match; matched 2/);
+  });
+
+  it("updates the configured number of regex capture matches", () => {
+    const cwd = makeTempDir();
+    write(
+      cwd,
+      "pkg/README.md",
+      "Install versionary@v1.2.2. See versionary@v1.2.2 for details.\n",
+    );
+
+    const config: VersionaryConfig = {
+      version: 1,
+      packages: {
+        pkg: {
+          "extra-files": [
+            {
+              type: "regex",
+              path: "README.md",
+              pattern: "versionary@v(\\d+\\.\\d+\\.\\d+)",
+              "expected-matches": 2,
+            },
+          ],
+        },
+      },
+    };
+
+    applyConfiguredArtifactRules(cwd, config, basePlan());
+    expect(read(cwd, "pkg/README.md")).toBe(
+      "Install versionary@v1.2.3. See versionary@v1.2.3 for details.\n",
+    );
+  });
+
+  it("updates the configured number of templated regex matches", () => {
+    const cwd = makeTempDir();
+    write(
+      cwd,
+      "pkg/README.md",
+      "uses: jolars/panache-action@v1\nuses: jolars/panache-action@v1\n",
+    );
+
+    const config: VersionaryConfig = {
+      version: 1,
+      packages: {
+        pkg: {
+          "extra-files": [
+            {
+              type: "regex",
+              path: "README.md",
+              pattern: "jolars/panache-action@v(\\d+)",
+              replacement: "jolars/panache-action@v{{major}}",
+              "expected-matches": 2,
+            },
+          ],
+        },
+      },
+    };
+
+    applyConfiguredArtifactRules(cwd, config, basePlan("pkg", "2.0.0"));
+    expect(read(cwd, "pkg/README.md")).toBe(
+      "uses: jolars/panache-action@v2\nuses: jolars/panache-action@v2\n",
+    );
+  });
+
+  it("reports configured regex match count mismatches", () => {
+    const cwd = makeTempDir();
+    write(cwd, "pkg/file.txt", "v1.2.2 v1.2.2 v1.2.2");
+
+    const config: VersionaryConfig = {
+      version: 1,
+      packages: {
+        pkg: {
+          "extra-files": [
+            {
+              type: "regex",
+              path: "file.txt",
+              pattern: "/v(\\d+\\.\\d+\\.\\d+)/",
+              "expected-matches": 2,
+            },
+          ],
+        },
+      },
+    };
+
+    expect(() => applyConfiguredArtifactRules(cwd, config, basePlan())).toThrow(
+      "Regex pattern expected 2 matches; matched 3.",
+    );
+  });
+
+  it("substitutes templated replacement tokens in regex rules", () => {
+    const cwd = makeTempDir();
+    write(cwd, "pkg/README.md", "uses: jolars/panache-action@v1\n");
+
+    const config: VersionaryConfig = {
+      version: 1,
+      packages: {
+        pkg: {
+          "extra-files": [
+            {
+              type: "regex",
+              path: "README.md",
+              pattern: "jolars/panache-action@v(\\d+)",
+              replacement: "jolars/panache-action@v{{major}}",
+            },
+          ],
+        },
+      },
+    };
+
+    applyConfiguredArtifactRules(cwd, config, basePlan("pkg", "2.0.0"));
+    expect(read(cwd, "pkg/README.md")).toContain("jolars/panache-action@v2\n");
+  });
+
+  it("exposes major/minor/patch tokens in regex replacements", () => {
+    const cwd = makeTempDir();
+    write(cwd, "pkg/README.md", "series: 1.2\n");
+
+    const config: VersionaryConfig = {
+      version: 1,
+      packages: {
+        pkg: {
+          "extra-files": [
+            {
+              type: "regex",
+              path: "README.md",
+              pattern: "series: \\d+\\.\\d+",
+              replacement: "series: {{major}}.{{minor}}",
+            },
+          ],
+        },
+      },
+    };
+
+    applyConfiguredArtifactRules(cwd, config, basePlan("pkg", "1.2.3"));
+    expect(read(cwd, "pkg/README.md")).toContain("series: 1.2\n");
+  });
+
+  it("does not interpret `$` sequences in replacement output", () => {
+    const cwd = makeTempDir();
+    write(cwd, "pkg/README.md", "price: OLD\n");
+
+    const config: VersionaryConfig = {
+      version: 1,
+      packages: {
+        pkg: {
+          "extra-files": [
+            {
+              type: "regex",
+              path: "README.md",
+              pattern: "price: OLD",
+              // biome-ignore lint/suspicious/noTemplateCurlyInString: literal token under test
+              replacement: "price: ${{major}}$&",
+            },
+          ],
+        },
+      },
+    };
+
+    applyConfiguredArtifactRules(cwd, config, basePlan("pkg", "1.2.3"));
+    expect(read(cwd, "pkg/README.md")).toContain("price: $1$&\n");
+  });
+
+  it("throws on unknown replacement tokens", () => {
+    const cwd = makeTempDir();
+    write(cwd, "pkg/README.md", "v1.2.2\n");
+
+    const config: VersionaryConfig = {
+      version: 1,
+      packages: {
+        pkg: {
+          "extra-files": [
+            {
+              type: "regex",
+              path: "README.md",
+              pattern: "v\\d+\\.\\d+\\.\\d+",
+              replacement: "v{{bogus}}",
+            },
+          ],
+        },
+      },
+    };
+
+    expect(() => applyConfiguredArtifactRules(cwd, config, basePlan())).toThrow(
+      /Unknown replacement token/,
+    );
   });
 });

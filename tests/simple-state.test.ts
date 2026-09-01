@@ -1,11 +1,18 @@
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  getPackageStateDirectory,
+  hasFullyUntaggedPendingRelease,
+  hasReleaseStateChangeAtHead,
   readBaselineSha,
+  readPendingReleaseCohorts,
+  readPendingReleaseTargets,
   readReleaseTargets,
   writeBaselineSha,
+  writePackageReleaseState,
 } from "../src/release/state.js";
 
 const tempDirs: string[] = [];
@@ -14,6 +21,30 @@ function makeTempDir(): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "versionary-state-test-"));
   tempDirs.push(dir);
   return dir;
+}
+
+function git(cwd: string, ...args: string[]): string {
+  return execFileSync("git", args, {
+    cwd,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"],
+  }).trim();
+}
+
+function makeRepo(): string {
+  const cwd = makeTempDir();
+  git(cwd, "init");
+  git(cwd, "config", "user.name", "Test User");
+  git(cwd, "config", "user.email", "test@example.com");
+  fs.writeFileSync(
+    path.join(cwd, "versionary.json"),
+    JSON.stringify({ version: 1 }),
+    "utf8",
+  );
+  fs.writeFileSync(path.join(cwd, "version.txt"), "1.2.0\n", "utf8");
+  git(cwd, "add", ".");
+  git(cwd, "commit", "-m", "chore: init");
+  return cwd;
 }
 
 afterEach(() => {
@@ -26,6 +57,114 @@ afterEach(() => {
 });
 
 describe("simple baseline state", () => {
+  it("stores independently mergeable package release state", () => {
+    const cwd = makeRepo();
+    writePackageReleaseState(
+      cwd,
+      "base-a",
+      [{ path: "packages/a", version: "1.1.0", tag: "a-v1.1.0" }],
+      "versionary/release/a",
+    );
+    writePackageReleaseState(
+      cwd,
+      "base-b",
+      [{ path: "packages/b", version: "2.0.1", tag: "b-v2.0.1" }],
+      "versionary/release/b",
+    );
+
+    expect(fs.existsSync(path.join(cwd, ".versionary-manifest.json"))).toBe(
+      false,
+    );
+    expect(fs.readdirSync(getPackageStateDirectory(cwd))).toHaveLength(2);
+    expect(readReleaseTargets(cwd)).toEqual([
+      { path: "packages/a", version: "1.1.0", tag: "a-v1.1.0" },
+      { path: "packages/b", version: "2.0.1", tag: "b-v2.0.1" },
+    ]);
+    expect(readPendingReleaseCohorts(cwd)).toEqual([
+      {
+        branch: "versionary/release/a",
+        targets: [{ path: "packages/a", version: "1.1.0", tag: "a-v1.1.0" }],
+      },
+      {
+        branch: "versionary/release/b",
+        targets: [{ path: "packages/b", version: "2.0.1", tag: "b-v2.0.1" }],
+      },
+    ]);
+  });
+
+  it("treats independently tagged cohorts independently", () => {
+    const cwd = makeRepo();
+    writePackageReleaseState(
+      cwd,
+      "base",
+      [{ path: "packages/a", version: "1.1.0", tag: "a-v1.1.0" }],
+      "versionary/release/a",
+    );
+    writePackageReleaseState(
+      cwd,
+      "base",
+      [{ path: "packages/b", version: "2.0.1", tag: "b-v2.0.1" }],
+      "versionary/release/b",
+    );
+    git(cwd, "tag", "a-v1.1.0");
+
+    expect(readPendingReleaseTargets(cwd)).toEqual([
+      { path: "packages/b", version: "2.0.1", tag: "b-v2.0.1" },
+    ]);
+    expect(hasFullyUntaggedPendingRelease(cwd)).toBe(true);
+  });
+
+  it("rejects partial tags within one package cohort", () => {
+    const cwd = makeRepo();
+    writePackageReleaseState(
+      cwd,
+      "base",
+      [
+        { path: "packages/a", version: "1.1.0", tag: "a-v1.1.0" },
+        { path: "packages/b", version: "2.0.1", tag: "b-v2.0.1" },
+      ],
+      "versionary/release/a",
+    );
+    git(cwd, "tag", "a-v1.1.0");
+
+    expect(() => readPendingReleaseCohorts(cwd)).toThrow(/partially tagged/i);
+    expect(readPendingReleaseTargets(cwd)).toEqual([
+      { path: "packages/a", version: "1.1.0", tag: "a-v1.1.0" },
+      { path: "packages/b", version: "2.0.1", tag: "b-v2.0.1" },
+    ]);
+  });
+
+  it("detects package state introduced by the head commit", () => {
+    const cwd = makeRepo();
+    expect(hasReleaseStateChangeAtHead(cwd)).toBe(false);
+    writePackageReleaseState(
+      cwd,
+      "base",
+      [{ path: "packages/a", version: "1.1.0", tag: "a-v1.1.0" }],
+      "versionary/release/a",
+    );
+    git(cwd, "add", ".");
+    git(cwd, "commit", "-m", "merge package release state");
+
+    expect(hasReleaseStateChangeAtHead(cwd)).toBe(true);
+  });
+
+  it("detects pending targets until every tag has been created", () => {
+    const cwd = makeRepo();
+    writeBaselineSha(cwd, undefined, [
+      { path: ".", version: "1.2.0", tag: "v1.2.0" },
+      { path: "pkg/a", version: "0.4.0", tag: "a-v0.4.0" },
+    ]);
+
+    expect(hasFullyUntaggedPendingRelease(cwd)).toBe(true);
+    git(cwd, "tag", "v1.2.0");
+    expect(() => hasFullyUntaggedPendingRelease(cwd)).toThrow(
+      /partially tagged/,
+    );
+    git(cwd, "tag", "a-v0.4.0");
+    expect(hasFullyUntaggedPendingRelease(cwd)).toBe(false);
+  });
+
   it("reads null when state file missing", () => {
     const dir = makeTempDir();
     fs.writeFileSync(
@@ -107,6 +246,84 @@ describe("simple baseline state", () => {
         tag: "panache-code-v2.34.2",
       },
       { path: "editors/zed", version: "2.34.1", tag: "panache-zed-v2.34.1" },
+    ]);
+    expect(readBaselineSha(dir)).toBe("bbb222");
+  });
+
+  it("scopes pending release targets to the latest write only", () => {
+    const dir = makeTempDir();
+    fs.writeFileSync(
+      path.join(dir, "versionary.json"),
+      JSON.stringify({ version: 1 }),
+      "utf8",
+    );
+    writeBaselineSha(dir, "aaa111", [
+      { path: ".", version: "2.35.0", tag: "v2.35.0" },
+      {
+        path: "crates/panache-parser",
+        version: "0.3.1",
+        tag: "panache-parser-v0.3.1",
+      },
+    ]);
+
+    writeBaselineSha(dir, "bbb222", [
+      {
+        path: "editors/code",
+        version: "2.34.2",
+        tag: "panache-code-v2.34.2",
+      },
+    ]);
+
+    // Accumulated baseline keeps every released package for planning...
+    expect(readReleaseTargets(dir)).toHaveLength(3);
+    // ...but the pending publish set is only what the latest PR introduced.
+    expect(readPendingReleaseTargets(dir)).toEqual([
+      {
+        path: "editors/code",
+        version: "2.34.2",
+        tag: "panache-code-v2.34.2",
+      },
+    ]);
+  });
+
+  it("reports no pending targets for manifests without a pending key", () => {
+    const dir = makeTempDir();
+    fs.writeFileSync(
+      path.join(dir, "versionary.json"),
+      JSON.stringify({ version: 1 }),
+      "utf8",
+    );
+    fs.writeFileSync(
+      path.join(dir, ".versionary-manifest.json"),
+      JSON.stringify({
+        "manifest-version": 1,
+        "baseline-sha": "abc123",
+        "release-targets": [
+          { path: ".", version: "1.0.0", tag: "v1.0.0" },
+          { path: "pkg/a", version: "0.1.0", tag: "a-v0.1.0" },
+        ],
+      }),
+      "utf8",
+    );
+
+    expect(readPendingReleaseTargets(dir)).toEqual([]);
+  });
+
+  it("retains the pending set across baseline-only writes", () => {
+    const dir = makeTempDir();
+    fs.writeFileSync(
+      path.join(dir, "versionary.json"),
+      JSON.stringify({ version: 1 }),
+      "utf8",
+    );
+    writeBaselineSha(dir, "aaa111", [
+      { path: "pkg/a", version: "0.1.0", tag: "a-v0.1.0" },
+    ]);
+
+    writeBaselineSha(dir, "bbb222");
+
+    expect(readPendingReleaseTargets(dir)).toEqual([
+      { path: "pkg/a", version: "0.1.0", tag: "a-v0.1.0" },
     ]);
     expect(readBaselineSha(dir)).toBe("bbb222");
   });

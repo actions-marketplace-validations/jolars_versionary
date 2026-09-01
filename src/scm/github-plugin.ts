@@ -5,6 +5,7 @@ import type {
   ScmClientContext,
   ScmCloseReviewRequestInput,
   ScmCloseReviewRequestResult,
+  ScmListReviewRequestsInput,
   ScmReleaseMetadataInput,
   ScmReleaseMetadataResult,
   ScmReleaseReferenceCommentsInput,
@@ -12,6 +13,7 @@ import type {
   ScmReleaseReferenceCommentsResult,
   ScmReviewRequestInput,
   ScmReviewRequestResult,
+  ScmReviewRequestSummary,
 } from "./types.js";
 
 interface ParsedRepo {
@@ -160,6 +162,9 @@ function groupReleasesByIssue(
   return new Map([...byIssue.entries()].sort(([a], [b]) => a - b));
 }
 
+const RELEASE_REFERENCE_COMMENT_FOOTER =
+  "Released by [Versionary](https://github.com/jolars/versionary).";
+
 function renderReleaseLink(
   release: ScmReleaseReferenceCommentsRelease,
 ): string {
@@ -169,11 +174,30 @@ function renderReleaseLink(
   return `[version ${release.version}](${release.releaseUrl})`;
 }
 
+// Reads bodies of prior Versionary release-reference comments on an issue so we
+// can avoid re-announcing a release that has already been posted (e.g. when an
+// already-published target is re-processed on a later release run).
+async function readExistingReferenceComments(
+  octokit: Octokit,
+  repo: { owner: string; repo: string },
+  issueNumber: number,
+): Promise<string> {
+  const response = await octokit.issues.listComments({
+    owner: repo.owner,
+    repo: repo.repo,
+    issue_number: issueNumber,
+    per_page: 100,
+  });
+  return response.data
+    .map((comment) => comment.body ?? "")
+    .filter((body) => body.includes(RELEASE_REFERENCE_COMMENT_FOOTER))
+    .join("\n");
+}
+
 function renderReleaseReferenceCommentBody(
   releases: ScmReleaseReferenceCommentsRelease[],
 ): string {
-  const footer =
-    "Released by [Versionary](https://github.com/jolars/versionary).";
+  const footer = RELEASE_REFERENCE_COMMENT_FOOTER;
   if (releases.length === 1) {
     const release = releases[0];
     if (!release) {
@@ -292,6 +316,61 @@ export function createGitHubPlugin(): VersionaryPluginRuntime & ScmClient {
           `pull request #${created.number} in ${repoRef(repo)}`,
         ),
       };
+    },
+    async listOpenReviewRequests(
+      input: ScmListReviewRequestsInput,
+      _context: ScmClientContext,
+    ): Promise<ScmReviewRequestSummary[]> {
+      const repo = getRepoFromEnv();
+      const octokit = new Octokit({ auth: getGitHubToken() });
+      const pulls: Awaited<ReturnType<typeof octokit.pulls.list>>["data"] = [];
+      try {
+        for (let page = 1; ; page += 1) {
+          const response = await octokit.pulls.list({
+            owner: repo.owner,
+            repo: repo.repo,
+            state: "open",
+            base: input.baseBranch,
+            per_page: 100,
+            page,
+          });
+          pulls.push(...response.data);
+          if (response.data.length < 100) {
+            break;
+          }
+        }
+      } catch (error: unknown) {
+        const { message } = parseGitHubError(error);
+        throw new Error(
+          `Failed listing open pull requests into "${input.baseBranch}": [${repoRef(repo)}] ${message}`,
+        );
+      }
+      const requiredLabels = new Set(input.labels ?? []);
+      return pulls
+        .filter((pull) => pull.head.ref.startsWith(input.headBranchPrefix))
+        .filter((pull) => {
+          const labels = new Set(
+            pull.labels
+              .map((label) =>
+                typeof label === "string" ? label : (label.name ?? ""),
+              )
+              .filter(Boolean),
+          );
+          return [...requiredLabels].every((label) => labels.has(label));
+        })
+        .map((pull) => ({
+          id: String(pull.id),
+          number: pull.number,
+          url: pull.html_url,
+          state: toReviewRequestState(
+            pull,
+            `pull request #${pull.number} in ${repoRef(repo)}`,
+          ),
+          baseBranch: pull.base.ref,
+          headBranch: pull.head.ref,
+          title: pull.title,
+        }))
+        .sort((a, b) => a.headBranch.localeCompare(b.headBranch));
     },
     async closeReviewRequestIfExists(
       input: ScmCloseReviewRequestInput,
@@ -419,7 +498,37 @@ export function createGitHubPlugin(): VersionaryPluginRuntime & ScmClient {
       const releasesByIssue = groupReleasesByIssue(input.releases);
       const commented: number[] = [];
       for (const [reference, releases] of releasesByIssue) {
-        const body = renderReleaseReferenceCommentBody(releases);
+        let announcedText: string;
+        try {
+          announcedText = await readExistingReferenceComments(
+            octokit,
+            repo,
+            reference,
+          );
+        } catch (error: unknown) {
+          const { message } = parseGitHubError(error);
+          if (mode === "strict") {
+            throw new Error(
+              `Failed listing existing comments on #${reference}: [${repoRef(repo)}] ${message}`,
+            );
+          }
+          context.logger?.warn(
+            `Could not check existing comments on #${reference}, posting anyway: [${repoRef(repo)}] ${message}`,
+          );
+          announcedText = "";
+        }
+
+        const pendingReleases = releases.filter(
+          (release) => !announcedText.includes(release.releaseUrl),
+        );
+        if (pendingReleases.length === 0) {
+          context.logger?.info(
+            `Skipping release reference comment on #${reference}: already announced.`,
+          );
+          continue;
+        }
+
+        const body = renderReleaseReferenceCommentBody(pendingReleases);
         try {
           await octokit.issues.createComment({
             owner: repo.owner,

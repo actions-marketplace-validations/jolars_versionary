@@ -1,12 +1,15 @@
 {
-  "$schema": "https://biomejs.dev/schemas/2.4.11/schema.json",
+  "$schema": "https://biomejs.dev/schemas/2.5.9/schema.json",
   "files": {
     "includes": [
       "**",
+      "!assets",
       "!.devenv",
       "!.direnv",
       "!dist",
       "!node_modules",
+      "!docs/.vitepress/dist",
+      "!docs/.vitepress/cache",
       "!panache",
       "!release-please",
       "!release-please-action",

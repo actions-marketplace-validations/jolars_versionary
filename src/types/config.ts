@@ -6,8 +6,9 @@ export interface VersionaryArtifactRule {
   type: "json" | "toml" | "yaml" | "nix" | "regex";
   path: string;
   "field-path"?: string;
-  jsonpath?: string;
   pattern?: string;
+  replacement?: string;
+  "expected-matches"?: number;
 }
 
 export interface VersionaryPackage {
@@ -15,6 +16,7 @@ export interface VersionaryPackage {
   "package-name"?: string;
   "changelog-file"?: string;
   "changelog-format"?: VersionaryChangelogFormat;
+  "allow-stable-major"?: boolean;
   "exclude-paths"?: string[];
   "extra-files"?: VersionaryArtifactRule[];
   follows?: string[];
@@ -22,20 +24,21 @@ export interface VersionaryPackage {
 
 export interface VersionaryConfig {
   version: 1;
-  "review-mode"?: "direct" | "pr" | "review";
+  "review-mode"?: "direct" | "pr";
   "version-file"?: string;
   "changelog-file"?: string;
   "changelog-format"?: VersionaryChangelogFormat;
   "release-draft"?: boolean;
   "release-reference-comments"?: ReleaseReferenceCommentsMode;
   "release-branch"?: string;
+  "separate-release-prs"?: boolean;
   "baseline-file"?: string;
-  "next-release-file"?: string;
   "bootstrap-sha"?: string;
   "monorepo-mode"?: "independent" | "fixed";
   "bump-minor-pre-major"?: boolean;
   "allow-stable-major"?: boolean;
   "include-commit-authors"?: boolean;
+  "exclude-paths"?: string[];
   "release-type"?: string | string[];
   packages?: Record<string, VersionaryPackage>;
 }

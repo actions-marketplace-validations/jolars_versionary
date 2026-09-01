@@ -11,7 +11,7 @@ import type { VersionaryChangelogFormat } from "../types/config.js";
 import {
   type ReleasePlan,
   resolvePackageDependencies,
-  type SimplePlan,
+  resolveRootReleaseView,
 } from "./plan.js";
 import { isVersionHeading } from "./semver.js";
 
@@ -97,12 +97,14 @@ function groupCommitLines(
   fixes: string[];
   performance: string[];
   reverts: string[];
+  other: string[];
 } {
   const breaking: string[] = [];
   const features: string[] = [];
   const fixes: string[] = [];
   const performance: string[] = [];
   const reverts: string[] = [];
+  const other: string[] = [];
   const effectiveCommits = applyRevertSuppression(commits);
 
   const getRevertedSubject = (commit: ParsedCommit): string => {
@@ -133,9 +135,6 @@ function groupCommitLines(
 
   for (const commit of effectiveCommits) {
     const type = inferReleaseTypeFromParsedCommit(commit);
-    if (!type) {
-      continue;
-    }
 
     const { label, message } = formatCommitMessage(commit.subject);
     const short = commit.hash.slice(0, 7);
@@ -147,6 +146,11 @@ function groupCommitLines(
     const line = `- ${label}${message} (${hashLabel})${referencesSuffix}`;
     const commitType = (commit.type ?? "").toLowerCase();
     const isBreaking = type === "major";
+
+    if (!type) {
+      other.push(line);
+      continue;
+    }
 
     if (commit.isRevert) {
       if (!shouldIncludeRevert(commit)) {
@@ -172,7 +176,30 @@ function groupCommitLines(
     }
   }
 
-  return { breaking, features, fixes, performance, reverts };
+  return { breaking, features, fixes, performance, reverts, other };
+}
+
+/**
+ * A forced bump — a stale dependency, or a propagated requirement rewrite —
+ * can carry no release-worthy commits at all. Rather than publish a bare
+ * version heading, such a release falls back to listing whatever else is
+ * shipping under it.
+ */
+function needsOtherChangesFallback(
+  grouped: ReturnType<typeof groupCommitLines>,
+  hasHighlights: boolean,
+  dependencyCount: number,
+): boolean {
+  if (hasHighlights || dependencyCount > 0 || grouped.other.length === 0) {
+    return false;
+  }
+  return (
+    grouped.breaking.length === 0 &&
+    grouped.features.length === 0 &&
+    grouped.fixes.length === 0 &&
+    grouped.performance.length === 0 &&
+    grouped.reverts.length === 0
+  );
 }
 
 export function renderReleaseNotesSection(
@@ -231,6 +258,15 @@ export function renderReleaseNotesSection(
       "",
     );
   }
+  if (
+    needsOtherChangesFallback(
+      grouped,
+      trimmedHighlights.length > 0,
+      input.dependencies?.length ?? 0,
+    )
+  ) {
+    sections.push("### Other changes", ...grouped.other, "");
+  }
   const body = [header, "", ...sections].join("\n").trimEnd();
   if (options.includeFooter) {
     return `${body}\n\n${renderReviewRequestFooter()}`;
@@ -251,16 +287,19 @@ export function renderReleasePlanChangelog(
     highlights?: string;
   } = {},
 ): string {
-  if (!plan.nextVersion) {
+  // Root's changelog describes root's own release, so it must be driven by the
+  // root package's version and commit set rather than the plan-level aggregate.
+  const root = resolveRootReleaseView(plan);
+  if (!root.nextVersion) {
     return "";
   }
   const dedupedCommits = [
-    ...new Map(plan.commits.map((commit) => [commit.hash, commit])).values(),
+    ...new Map(root.commits.map((commit) => [commit.hash, commit])).values(),
   ];
   if (plan.changelogFormat === "r-news") {
     return renderRNewsReleaseNotes({
       packageName: plan.packageName,
-      nextVersion: plan.nextVersion,
+      nextVersion: root.nextVersion,
       commits: dedupedCommits,
       cwd: process.cwd(),
       highlights: options.highlights,
@@ -268,8 +307,8 @@ export function renderReleasePlanChangelog(
   }
   return renderReleaseNotesSection(
     {
-      currentVersion: plan.currentVersion,
-      nextVersion: plan.nextVersion,
+      currentVersion: root.currentVersion,
+      nextVersion: root.nextVersion,
       commits: dedupedCommits,
       cwd: options.cwd ?? process.cwd(),
       dependencies: resolvePackageDependencies(plan, "."),
@@ -280,11 +319,6 @@ export function renderReleasePlanChangelog(
       includeFooter: options.includeFooter,
     },
   );
-}
-
-/** @deprecated Use renderReleasePlanChangelog. */
-export function renderSimpleChangelog(plan: SimplePlan): string {
-  return renderReleasePlanChangelog(plan);
 }
 
 /**
@@ -376,7 +410,6 @@ export function renderRNewsReleaseNotes(input: {
 }): string {
   const repoUrl = resolveRepositoryWebBaseUrl(input.cwd ?? process.cwd());
   const grouped = groupCommitLines(input.commits, repoUrl);
-  const normalizedVersion = input.nextVersion.replace(/\.\d+$/u, "");
   const sections: string[] = [];
   const trimmedHighlights = input.highlights?.trim() ?? "";
   if (trimmedHighlights.length > 0) {
@@ -402,7 +435,10 @@ export function renderRNewsReleaseNotes(input: {
   if (grouped.reverts.length > 0) {
     sections.push("## Reverts", "", ...grouped.reverts, "");
   }
-  return [`# ${input.packageName} ${normalizedVersion}`, "", ...sections]
+  if (needsOtherChangesFallback(grouped, trimmedHighlights.length > 0, 0)) {
+    sections.push("## Other changes", "", ...grouped.other, "");
+  }
+  return [`# ${input.packageName} ${input.nextVersion}`, "", ...sections]
     .join("\n")
     .trimEnd();
 }

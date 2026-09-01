@@ -1,6 +1,6 @@
 {
   "name": "versionary",
-  "version": "0.29.0",
+  "version": "1.2.0",
   "description": "Automatic release framework based on conventional commits and semantic versioning",
   "keywords": [
     "releasing",
@@ -18,7 +18,7 @@
   "license": "MIT",
   "author": "Johan Larsson",
   "type": "module",
-  "packageManager": "pnpm@10.33.0",
+  "packageManager": "pnpm@10.34.5",
   "bin": {
     "versionary": "dist/cli/index.js"
   },
@@ -31,25 +31,39 @@
     "prepare": "pnpm run build",
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "biome ci .",
+    "gen:action": "tsx scripts/generate-action.ts",
+    "gen:schema": "tsx scripts/generate-schema.ts && biome format --write schemas/config.json",
     "test": "vitest run",
     "verify": "tsx src/cli/index.ts verify",
     "run": "tsx src/cli/index.ts run",
     "plan": "tsx src/cli/index.ts plan",
     "changelog": "tsx src/cli/index.ts changelog",
     "pr": "tsx src/cli/index.ts pr",
-    "release": "tsx src/cli/index.ts release"
+    "release": "tsx src/cli/index.ts release",
+    "docs:dev": "vitepress dev docs",
+    "docs:build": "vitepress build docs",
+    "docs:preview": "vitepress preview docs"
   },
   "dependencies": {
-    "smol-toml": "^1.4.2",
     "@octokit/rest": "^22.0.0",
     "jsonc-parser": "^3.3.1",
+    "smol-toml": "^1.4.2",
     "yaml": "^2.8.3",
     "zod": "^4.1.12"
   },
   "devDependencies": {
-    "@types/node": "^25.6.0",
+    "@types/node": "^26.0.1",
     "tsx": "^4.20.6",
-    "typescript": "^6.0.3",
+    "typescript": "^7.0.2",
+    "vite": "^8.0.0",
+    "vitepress": "^1.6.4",
     "vitest": "^4.1.4"
+  },
+  "pnpm": {
+    "overrides": {
+      "vite@5": "^6.4.3",
+      "esbuild@0.21.5": "^0.25.0"
+    }
   }
 }

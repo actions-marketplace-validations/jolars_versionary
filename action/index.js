@@ -1,3 +1,4 @@
+// This file is generated from `src/action/index.ts`; do not edit it directly.
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { appendFileSync } from "node:fs";
@@ -12,7 +13,6 @@ function getInput(name) {
     ""
   ).trim();
 }
-
 function runGit(cwd, args) {
   return execFileSync("git", args, {
     cwd,
@@ -20,7 +20,6 @@ function runGit(cwd, args) {
     stdio: ["ignore", "pipe", "pipe"],
   }).trim();
 }
-
 function hasGitConfig(cwd, key) {
   try {
     runGit(cwd, ["config", key]);
@@ -29,7 +28,6 @@ function hasGitConfig(cwd, key) {
     return false;
   }
 }
-
 function hasOriginRemote(cwd) {
   try {
     runGit(cwd, ["remote", "get-url", "origin"]);
@@ -38,7 +36,35 @@ function hasOriginRemote(cwd) {
     return false;
   }
 }
-
+function getRemoteRefSha(cwd, ref) {
+  try {
+    const output = runGit(cwd, ["ls-remote", "origin", ref]);
+    const line = output.split("\n")[0]?.trim() ?? "";
+    if (!line) {
+      return null;
+    }
+    const sha = line.split(/\s+/u)[0]?.trim() ?? "";
+    return sha.length > 0 ? sha : null;
+  } catch {
+    return null;
+  }
+}
+function hasVersionaryReleaseMarker(cwd, sha) {
+  try {
+    const message = runGit(cwd, ["show", "-s", "--format=%B", sha]);
+    return /^Versionary-Release:\s*true$/imu.test(message);
+  } catch {
+    return false;
+  }
+}
+function isAncestor(cwd, ancestor, descendant) {
+  try {
+    runGit(cwd, ["merge-base", "--is-ancestor", ancestor, descendant]);
+    return true;
+  } catch {
+    return false;
+  }
+}
 function setOutput(name, value) {
   const outputPath = process.env.GITHUB_OUTPUT;
   if (!outputPath) {
@@ -51,19 +77,14 @@ function setOutput(name, value) {
     "utf8",
   );
 }
-
 function main() {
-  const token = getInput("token") || getInput("github-token");
+  const token = getInput("token");
   if (!token) {
-    throw new Error(
-      "Input required and not supplied: token (or deprecated github-token).",
-    );
+    throw new Error("Input required and not supplied: token.");
   }
-
   const versionaryVersion = getInput("versionary-version") || "0.7.0";
   const cwd = getInput("working-directory") || ".";
   process.chdir(cwd);
-
   if (!hasGitConfig(cwd, "user.name")) {
     runGit(cwd, ["config", "user.name", "github-actions[bot]"]);
   }
@@ -74,7 +95,6 @@ function main() {
       "41898282+github-actions[bot]@users.noreply.github.com",
     ]);
   }
-
   if (hasOriginRemote(cwd)) {
     const serverUrl = process.env.GITHUB_SERVER_URL ?? "https://github.com";
     const repository = process.env.GITHUB_REPOSITORY;
@@ -90,7 +110,46 @@ function main() {
       `https://x-access-token:${encodedToken}@${base}/${repository}.git`,
     ]);
   }
-
+  const eventName = process.env.GITHUB_EVENT_NAME ?? "";
+  const ref = process.env.GITHUB_REF ?? "";
+  const sha = process.env.GITHUB_SHA?.trim() ?? "";
+  if (
+    eventName === "push" &&
+    ref.startsWith("refs/heads/") &&
+    sha.length > 0 &&
+    hasOriginRemote(cwd)
+  ) {
+    const remoteSha = getRemoteRefSha(cwd, ref);
+    if (remoteSha && remoteSha !== sha) {
+      // Descendant pushes must not turn an otherwise valid release into a
+      // recovery cycle.
+      const releaseCanPublish =
+        hasVersionaryReleaseMarker(cwd, sha) && isAncestor(cwd, sha, remoteSha);
+      if (!releaseCanPublish) {
+        const staleMessage =
+          `Skipping stale push run for ${sha.slice(0, 7)}; ` +
+          `${ref} now points to ${remoteSha.slice(0, 7)}.`;
+        const stalePayload = {
+          action: "stale-run-skipped",
+          message: staleMessage,
+          releaseCreated: false,
+          tagNames: [],
+        };
+        process.stdout.write(`${JSON.stringify(stalePayload)}\n`);
+        setOutput("action", stalePayload.action);
+        setOutput("message", stalePayload.message);
+        setOutput("release_created", "false");
+        setOutput("tag_name", "");
+        setOutput("tag_names", "[]");
+        setOutput("release_targets", "[]");
+        setOutput("review_url", "");
+        setOutput("review_requests", "[]");
+        setOutput("branch", "");
+        setOutput("title", "");
+        return;
+      }
+    }
+  }
   const raw = execFileSync(
     "npx",
     ["--yes", `versionary@${versionaryVersion}`, "run", "--json"],
@@ -108,7 +167,6 @@ function main() {
     throw new Error("Versionary returned empty JSON output.");
   }
   process.stdout.write(`${raw}\n`);
-
   let payload;
   try {
     payload = JSON.parse(raw);
@@ -117,24 +175,33 @@ function main() {
       `Failed parsing Versionary JSON output: ${error instanceof Error ? error.message : String(error)}`,
     );
   }
-
   const tagNames = Array.isArray(payload.tagNames)
     ? payload.tagNames.filter((value) => typeof value === "string")
     : [];
   const firstTag = tagNames[0] ?? "";
   const releaseCreated =
     payload.releaseCreated === true || tagNames.length > 0 ? "true" : "false";
-
   setOutput("action", payload.action ?? "");
   setOutput("message", payload.message ?? "");
   setOutput("release_created", releaseCreated);
   setOutput("tag_name", firstTag);
   setOutput("tag_names", JSON.stringify(tagNames));
+  setOutput(
+    "release_targets",
+    JSON.stringify(
+      Array.isArray(payload.releaseTargets) ? payload.releaseTargets : [],
+    ),
+  );
   setOutput("review_url", payload.reviewUrl ?? "");
+  setOutput(
+    "review_requests",
+    JSON.stringify(
+      Array.isArray(payload.reviewRequests) ? payload.reviewRequests : [],
+    ),
+  );
   setOutput("branch", payload.branch ?? "");
   setOutput("title", payload.title ?? "");
 }
-
 try {
   main();
 } catch (error) {

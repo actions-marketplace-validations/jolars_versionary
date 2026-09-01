@@ -1,6 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import { afterEach, expect } from "vitest";
+import { cmakeVersionStrategy } from "../src/strategy/cmake.js";
+import { juliaVersionStrategy } from "../src/strategy/julia.js";
 import { latexVersionStrategy } from "../src/strategy/latex.js";
 import { nodeVersionStrategy } from "../src/strategy/node.js";
 import { pythonVersionStrategy } from "../src/strategy/python.js";
@@ -27,6 +29,24 @@ defineVersionStrategyContractSuite({
       "version.txt": "1.2.3\n",
     },
     expectedUpdatedFiles: ["version.txt"],
+  },
+});
+
+defineVersionStrategyContractSuite({
+  name: "cmake",
+  strategy: cmakeVersionStrategy,
+  config: { version: 1, "release-type": "cmake" },
+  initialVersion: "6.5.0",
+  nextVersion: "6.6.0",
+  fixture: {
+    files: {
+      "CMakeLists.txt": "project(slope VERSION 6.5.0 LANGUAGES CXX)\n",
+    },
+    expectedUpdatedFiles: ["CMakeLists.txt"],
+    malformedFiles: {
+      "CMakeLists.txt": "project(slope LANGUAGES CXX)\n",
+    },
+    malformedReadError: /literal VERSION argument/i,
   },
 });
 
@@ -150,6 +170,43 @@ defineVersionStrategyContractSuite({
         "utf8",
       );
       expect(pyproject).toContain(`version = "${nextVersion}"`);
+    },
+  },
+});
+
+defineVersionStrategyContractSuite({
+  name: "julia",
+  strategy: juliaVersionStrategy,
+  config: { version: 1, "release-type": "julia" },
+  initialVersion: "0.1.0",
+  nextVersion: "0.2.0",
+  fixture: {
+    files: {
+      "Project.toml": [
+        'name = "Demo"',
+        'uuid = "7876af07-990d-54b4-ab0e-23690620f79a"',
+        'version = "0.1.0"',
+        "",
+        "[deps]",
+        'JSON = "682c06a0-de6a-54ab-a142-c8b1cf79cde6"',
+        "",
+      ].join("\n"),
+    },
+    expectedUpdatedFiles: ["Project.toml"],
+    malformedFiles: {
+      "Project.toml": [
+        'name = "Demo"',
+        'uuid = "7876af07-990d-54b4-ab0e-23690620f79a"',
+        "",
+      ].join("\n"),
+    },
+    malformedReadError: /missing a valid root "version" field/i,
+    assertAfterWrite: (cwd, nextVersion) => {
+      const projectToml = fs.readFileSync(
+        path.join(cwd, "Project.toml"),
+        "utf8",
+      );
+      expect(projectToml).toContain(`version = "${nextVersion}"`);
     },
   },
 });

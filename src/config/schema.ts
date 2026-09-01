@@ -5,35 +5,42 @@ const artifactRuleSchema = z
     type: z.enum(["json", "toml", "yaml", "nix", "regex"]),
     path: z.string().min(1),
     "field-path": z.string().optional(),
-    jsonpath: z.string().optional(),
     pattern: z.string().optional(),
+    replacement: z.string().optional(),
+    "expected-matches": z.number().int().positive().optional(),
   })
   .superRefine((value, ctx) => {
-    const needsJsonPath =
+    const needsFieldPath =
       value.type === "json" ||
       value.type === "toml" ||
       value.type === "yaml" ||
       value.type === "nix";
-    const hasFieldPath = Boolean(value["field-path"] ?? value.jsonpath);
-    if (needsJsonPath && !hasFieldPath) {
+    if (needsFieldPath && !value["field-path"]) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        message: `${value.type} artifact rules require "field-path" (or deprecated "jsonpath").`,
+        message: `${value.type} artifact rules require "field-path".`,
         path: ["field-path"],
       });
     }
-    if (needsJsonPath && value.pattern) {
+    if (needsFieldPath && value.pattern) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         message: `${value.type} artifact rules do not support "pattern".`,
         path: ["pattern"],
       });
     }
-    if (value["field-path"] && value.jsonpath) {
+    if (needsFieldPath && value.replacement) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        message: 'Specify only one of "field-path" or deprecated "jsonpath".',
-        path: ["field-path"],
+        message: `${value.type} artifact rules do not support "replacement".`,
+        path: ["replacement"],
+      });
+    }
+    if (needsFieldPath && value["expected-matches"] !== undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `${value.type} artifact rules do not support "expected-matches".`,
+        path: ["expected-matches"],
       });
     }
     if (value.type === "regex" && !value.pattern) {
@@ -43,11 +50,10 @@ const artifactRuleSchema = z
         path: ["pattern"],
       });
     }
-    if (value.type === "regex" && (value["field-path"] || value.jsonpath)) {
+    if (value.type === "regex" && value["field-path"]) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        message:
-          'regex artifact rules do not support "field-path" or deprecated "jsonpath".',
+        message: 'regex artifact rules do not support "field-path".',
         path: ["field-path"],
       });
     }
@@ -61,6 +67,7 @@ const packageSchema = z
     "package-name": z.string().optional(),
     "changelog-file": z.string().optional(),
     "changelog-format": z.enum(["markdown-changelog", "r-news"]).optional(),
+    "allow-stable-major": z.boolean().optional(),
     "exclude-paths": z.array(z.string()).optional(),
     "extra-files": z.array(artifactRuleSchema).optional(),
     follows: z.array(z.string().min(1)).optional(),
@@ -71,7 +78,7 @@ export const configSchema = z
   .object({
     $schema: z.string().optional(),
     version: z.literal(1),
-    "review-mode": z.enum(["direct", "pr", "review"]).optional(),
+    "review-mode": z.enum(["direct", "pr"]).optional(),
     "version-file": z.string().optional(),
     "changelog-file": z.string().optional(),
     "changelog-format": z.enum(["markdown-changelog", "r-news"]).optional(),
@@ -80,13 +87,14 @@ export const configSchema = z
       .enum(["off", "best-effort", "strict"])
       .optional(),
     "release-branch": z.string().optional(),
+    "separate-release-prs": z.boolean().optional(),
     "baseline-file": z.string().optional(),
-    "next-release-file": z.string().optional(),
     "bootstrap-sha": z.string().optional(),
     "monorepo-mode": z.enum(["independent", "fixed"]).optional(),
     "bump-minor-pre-major": z.boolean().optional(),
     "allow-stable-major": z.boolean().optional(),
     "include-commit-authors": z.boolean().optional(),
+    "exclude-paths": z.array(z.string()).optional(),
     "release-type": z
       .union([z.string().min(1), z.array(z.string().min(1)).min(1)])
       .optional(),
@@ -95,6 +103,31 @@ export const configSchema = z
   .strict()
   .superRefine((value, ctx) => {
     const packages = value.packages;
+    if (value["separate-release-prs"]) {
+      if (!packages || Object.keys(packages).length === 0) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: '"separate-release-prs" requires a non-empty packages map.',
+          path: ["separate-release-prs"],
+        });
+      }
+      if (value["monorepo-mode"] === "fixed") {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message:
+            '"separate-release-prs" cannot be combined with monorepo-mode "fixed".',
+          path: ["separate-release-prs"],
+        });
+      }
+      if (value["review-mode"] === "direct") {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message:
+            '"separate-release-prs" cannot be combined with review-mode "direct".',
+          path: ["separate-release-prs"],
+        });
+      }
+    }
     if (!packages) {
       return;
     }

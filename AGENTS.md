@@ -83,14 +83,18 @@ a strategy model:
 - `src/release/`: release modules (`plan`, `changelog`, `semver`, `pr`,
   `release`, `verify-project`, `state`, `recovery`, `artifact-rules`)
 - `src/strategy/`: strategy contracts + implementations (`simple`, `node`,
-  `rust`, `r`, `python`, `latex`), the `composite` composer for combining
-  strategies, and the resolver
+  `rust`, `r`, `python`, `latex`, `julia`), the `composite` composer for
+  combining strategies, and the resolver
 - `src/git/`: git commit/range analysis and repository URL resolution
 - `src/scm/`: SCM integration boundary (`types`, static client resolver,
   provider implementations like `github-plugin`)
 - `src/config/`: config discovery/parsing/validation
   - `load-config.ts` loads `versionary.jsonc` (preferred) or `versionary.json`
-  - `schema.ts` validates config via `zod`
+  - `schema.ts` validates config via `zod` and is the single source of truth
+    for config shape; the editor-facing `schemas/config.json` is generated from
+    it via `pnpm gen:schema` (don't hand-edit it). `scripts/generate-schema.ts`
+    patches in the artifact-rule constraints Zod can't express, and
+    `tests/config-schema-sync.test.ts` fails if the committed file drifts.
 - `src/action/`: GitHub Action entrypoint wiring to CLI behavior
 - `src/types/`: shared config/SCM types
 
@@ -125,8 +129,7 @@ a strategy model:
 - `run` is the primary CI entrypoint: it auto-dispatches to PR/update flow or
   release publish flow based on commit context.
 - `review-mode` controls review-request behavior (`direct` skips PR creation,
-  `pr` uses the configured internal SCM provider; legacy `review` alias is
-  accepted).
+  `pr` uses the configured internal SCM provider).
 - Treat package publishing as out of scope for Versionary itself; external CI
   workflows should publish artifacts based on release/tag events.
 - Packaging is CLI-first:

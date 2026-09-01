@@ -7,7 +7,8 @@ import type {
   VersionaryConfig,
   VersionaryPackage,
 } from "../types/config.js";
-import type { SimplePlan } from "./plan.js";
+import type { ReleasePlan } from "./plan.js";
+import { parseVersion } from "./semver.js";
 
 const WILDCARD = Symbol("wildcard");
 type FieldPathToken = string | number | typeof WILDCARD;
@@ -201,11 +202,9 @@ function setVersionAtJsonPath(
 }
 
 function resolveFieldPath(rule: VersionaryArtifactRule): string {
-  const fieldPath = rule["field-path"] ?? rule.jsonpath;
+  const fieldPath = rule["field-path"];
   if (!fieldPath) {
-    throw new Error(
-      `${rule.type} artifact rules require "field-path" (or deprecated "jsonpath").`,
-    );
+    throw new Error(`${rule.type} artifact rules require "field-path".`);
   }
   return fieldPath;
 }
@@ -223,35 +222,82 @@ function parseRegexPattern(pattern: string): RegExp {
   return new RegExp(pattern, "m");
 }
 
+const REPLACEMENT_TOKEN_PATTERN = /\{\{\s*([A-Za-z]+)\s*\}\}/gu;
+
+function renderReplacementTemplate(template: string, version: string): string {
+  const parsed = parseVersion(version);
+  const tokens: Record<string, string> = {
+    version,
+    major: String(parsed.major),
+    minor: String(parsed.minor),
+    patch: String(parsed.patch),
+    prerelease: parsed.prerelease.join("."),
+    build: parsed.build.join("."),
+  };
+  return template.replace(REPLACEMENT_TOKEN_PATTERN, (_whole, name: string) => {
+    const key = name.toLowerCase();
+    const value = tokens[key];
+    if (value === undefined) {
+      throw new Error(
+        `Unknown replacement token "{{${name}}}". Supported tokens: ${Object.keys(
+          tokens,
+        )
+          .map((token) => `{{${token}}}`)
+          .join(", ")}.`,
+      );
+    }
+    return value;
+  });
+}
+
 function applyRegexRule(
   content: string,
   pattern: string,
   version: string,
+  expectedMatches: number,
+  replacementTemplate?: string,
 ): string {
   const regex = parseRegexPattern(pattern);
   const matchFlags = regex.flags.includes("g")
     ? regex.flags
     : `${regex.flags}g`;
-  const globalRegex = new RegExp(regex.source, matchFlags);
+  const globalRegex = new RegExp(
+    regex.source,
+    matchFlags.includes("d") ? matchFlags : `${matchFlags}d`,
+  );
   const matches = [...content.matchAll(globalRegex)];
-  if (matches.length !== 1) {
+  if (matches.length !== expectedMatches) {
     throw new Error(
-      `Regex pattern must match exactly one occurrence; matched ${matches.length}.`,
+      `Regex pattern expected ${expectedMatches} ${expectedMatches === 1 ? "match" : "matches"}; matched ${matches.length}.`,
     );
   }
-  const match = matches[0];
-  if (!match) {
-    throw new Error("Regex match result missing.");
+
+  const renderedReplacement =
+    replacementTemplate === undefined
+      ? undefined
+      : renderReplacementTemplate(replacementTemplate, version);
+  let updated = content;
+  for (let index = matches.length - 1; index >= 0; index -= 1) {
+    const match = matches[index];
+    if (!match || match.index === undefined) {
+      throw new Error("Regex match did not include an index.");
+    }
+
+    // Apply edits from right to left so every match keeps its original indices.
+    if (renderedReplacement !== undefined) {
+      updated = `${updated.slice(0, match.index)}${renderedReplacement}${updated.slice(match.index + match[0].length)}`;
+      continue;
+    }
+
+    // Splice by group indices so literal `$` sequences and repeated group content
+    // are handled correctly.
+    const [start, end] = match.indices?.[1] ?? [
+      match.index,
+      match.index + match[0].length,
+    ];
+    updated = `${updated.slice(0, start)}${version}${updated.slice(end)}`;
   }
-  const start = match.index;
-  if (start === undefined) {
-    throw new Error("Regex match did not include an index.");
-  }
-  const full = match[0];
-  const groupOne = match[1];
-  const replacement =
-    typeof groupOne === "string" ? full.replace(groupOne, version) : version;
-  return `${content.slice(0, start)}${replacement}${content.slice(start + full.length)}`;
+  return updated;
 }
 
 function applyTomlRulePreservingFormatting(
@@ -528,7 +574,13 @@ function applyArtifactRuleToContent(
     if (!rule.pattern) {
       throw new Error('regex artifact rules require "pattern".');
     }
-    return applyRegexRule(content, rule.pattern, version);
+    return applyRegexRule(
+      content,
+      rule.pattern,
+      version,
+      rule["expected-matches"] ?? 1,
+      rule.replacement,
+    );
   }
   if (rule.type === "json") {
     const parsed = JSON.parse(content) as unknown;
@@ -596,7 +648,7 @@ function applyArtifactRulesForPackage(
 export function applyConfiguredArtifactRules(
   cwd: string,
   config: VersionaryConfig,
-  plan: SimplePlan,
+  plan: ReleasePlan,
 ): string[] {
   const packageConfigs = config.packages ?? {};
   if (!plan.packages || plan.packages.length === 0) {

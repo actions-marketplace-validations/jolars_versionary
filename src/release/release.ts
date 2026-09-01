@@ -13,7 +13,12 @@ import type { VersionaryPluginContext } from "../types/plugins.js";
 import { getChangelogDefaults } from "./plan.js";
 import { isReleaseCommitMessage } from "./pr.js";
 import { executeIdempotentReleaseTarget } from "./recovery.js";
-import { readReleaseTargets } from "./state.js";
+import {
+  hasReleaseStateChangeAtHead,
+  readPendingReleaseTargets,
+  readRecordedPendingReleaseTargets,
+} from "./state.js";
+import { releaseTargetHandoff } from "./targets.js";
 
 function escapeRegExp(input: string): string {
   return input.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
@@ -208,6 +213,12 @@ export type RunReleaseResult =
         tag: string;
         version: string;
       }[];
+      releaseTargets: {
+        path: string;
+        tag: string;
+        version: string;
+        dependencies: string[];
+      }[];
     }
   | {
       action: "release-published";
@@ -217,6 +228,12 @@ export type RunReleaseResult =
         url: string;
         tagStatus: "created" | "exists";
         metadataStatus: "created" | "exists";
+      }[];
+      releaseTargets: {
+        path: string;
+        tag: string;
+        version: string;
+        dependencies: string[];
       }[];
     };
 
@@ -230,7 +247,10 @@ export async function runReleaseDetailed(
   options: RunReleaseOptions = {},
 ): Promise<RunReleaseResult> {
   const commitMessage = getHeadCommitMessage(cwd);
-  if (!isReleaseCommitMessage(commitMessage)) {
+  if (
+    !isReleaseCommitMessage(commitMessage) &&
+    !hasReleaseStateChangeAtHead(cwd)
+  ) {
     return {
       action: "release-skipped",
       reason: "No release commit context detected; skipping release stage.",
@@ -245,20 +265,37 @@ export async function runReleaseDetailed(
   });
   const referenceCommentMode =
     loaded.config["release-reference-comments"] ?? "off";
-  const version = strategy.readVersion(cwd, loaded.config);
-  const defaultTag = `v${version}`;
-
-  const releaseTargets = readReleaseTargets(cwd);
-  const targets =
+  const releaseTargets = readPendingReleaseTargets(cwd);
+  if (loaded.config["separate-release-prs"] && releaseTargets.length === 0) {
+    return {
+      action: "release-skipped",
+      reason:
+        "No untagged package release targets found; skipping release stage.",
+    };
+  }
+  // Recorded-but-fully-tagged targets mean this release already published, so
+  // replaying them keeps a re-run idempotent (and still repairs missing release
+  // metadata). Only a repo that never recorded any target may fall back to
+  // tagging the root package.
+  const recordedTargets =
     releaseTargets.length > 0
       ? releaseTargets
+      : readRecordedPendingReleaseTargets(cwd);
+  const version =
+    recordedTargets.length === 0
+      ? strategy.readVersion(cwd, loaded.config)
+      : undefined;
+  const targets =
+    recordedTargets.length > 0
+      ? recordedTargets
       : [
           {
             path: ".",
-            version,
-            tag: defaultTag,
+            version: version as string,
+            tag: `v${version as string}`,
           },
         ];
+  const releaseTargetPlan = releaseTargetHandoff(targets, options.logger);
 
   if (options["dry-run"]) {
     const targetList = targets.map(
@@ -270,6 +307,7 @@ export async function runReleaseDetailed(
         tag: target.tag,
         version: target.version,
       })),
+      releaseTargets: releaseTargetPlan,
       message: `Dry run: would publish releases ${targetList.join(", ")}`,
     };
   }
@@ -330,7 +368,9 @@ export async function runReleaseDetailed(
       tagStatus: outcome.tagStatus,
       metadataStatus: outcome.metadataStatus,
     });
-    if (references.length > 0) {
+    const releaseWasCreated =
+      outcome.tagStatus === "created" || outcome.metadataStatus === "created";
+    if (references.length > 0 && releaseWasCreated) {
       referenceReleases.push({
         name: resolveTargetPackageName(cwd, loaded.config, target.path),
         tag: outcome.tag,
@@ -365,22 +405,7 @@ export async function runReleaseDetailed(
   return {
     action: "release-published",
     releases,
+    releaseTargets: releaseTargetPlan,
     message: `Published releases ${published.join(", ")}`,
   };
-}
-
-/** @deprecated Use RunReleaseResult. */
-export type SimpleRunReleaseResult = RunReleaseResult;
-/** @deprecated Use RunReleaseOptions. */
-export type RunSimpleReleaseOptions = RunReleaseOptions;
-/** @deprecated Use runRelease. */
-export async function runSimpleRelease(cwd = process.cwd()): Promise<string> {
-  return runRelease(cwd);
-}
-/** @deprecated Use runReleaseDetailed. */
-export async function runSimpleReleaseDetailed(
-  cwd = process.cwd(),
-  options: RunSimpleReleaseOptions = {},
-): Promise<SimpleRunReleaseResult> {
-  return runReleaseDetailed(cwd, options);
 }
