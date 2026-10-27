@@ -1,5 +1,7 @@
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { parse as parseToml } from "smol-toml";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   applyRustWorkspaceDependencyUpdates,
@@ -46,6 +48,15 @@ function useFixture(relative: string): string {
   return cwd;
 }
 
+function cargoOnPath(): boolean {
+  try {
+    execFileSync("cargo", ["--version"], { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 afterEach(() => {
   while (tempDirs.length > 0) {
     const dir = tempDirs.pop();
@@ -56,6 +67,62 @@ afterEach(() => {
 });
 
 describe("rustVersionStrategy", () => {
+  it.runIf(cargoOnPath())(
+    "preserves external dependency versions in root and nested lockfiles",
+    () => {
+      const cwd = useFixture("locked-dependencies");
+      const registry = path.join(cwd, "registry");
+      write(
+        cwd,
+        ".cargo/config.toml",
+        [
+          "[source.crates-io]",
+          'replace-with = "test-registry"',
+          "[source.test-registry]",
+          `local-registry = ${JSON.stringify(registry)}`,
+          "",
+        ].join("\n"),
+      );
+      rustVersionStrategy.writeVersion(
+        cwd,
+        { version: 1, "release-type": "rust" },
+        "0.2.0",
+      );
+      const updatedFiles = rustVersionStrategy.finalizeVersionWrites?.(
+        cwd,
+        [{ packagePath: ".", versionFile: "Cargo.toml", version: "0.2.0" }],
+        { releaseCommitSha: "abc", releaseDate: "2026-10-26" },
+      );
+
+      expect(updatedFiles).toEqual(
+        expect.arrayContaining([
+          "Cargo.lock",
+          "examples/consumer/Cargo.lock",
+          "examples/consumer/Cargo.toml",
+        ]),
+      );
+      expect(read(cwd, "examples/consumer/Cargo.toml")).toContain(
+        'demo = { path = "../..", version = "0.2.0" }',
+      );
+      for (const lockfile of ["Cargo.lock", "examples/consumer/Cargo.lock"]) {
+        const packages = parseToml(read(cwd, lockfile)).package as {
+          name: string;
+          version: string;
+        }[];
+        expect(packages.find((pkg) => pkg.name === "demo")?.version).toBe(
+          "0.2.0",
+        );
+        expect(
+          packages
+            .filter((pkg) => pkg.name === "external-dep")
+            .map((pkg) => pkg.version),
+        ).toEqual(["1.0.0"]);
+      }
+    },
+    // Multiple Cargo subprocesses can exceed the default timeout on CI runners.
+    30_000,
+  );
+
   it("reads [package].version from Cargo.toml", () => {
     const cwd = useFixture("root-crate");
 
@@ -484,7 +551,7 @@ describe("rustVersionStrategy", () => {
 
     expect(rustVersionStrategy.readVersion(cwd, config)).toBe("0.4.0");
     expect(rustVersionStrategy.validateProject(cwd, config)).toBeNull();
-    expect(rustVersionStrategy.readPackageName?.(cwd, config)).toBe("core-lib");
+    expect(rustVersionStrategy.readPackageName?.(cwd, config)).toBeNull();
 
     const updatedFiles = rustVersionStrategy.writeVersion(cwd, config, "0.5.0");
     expect(updatedFiles).toEqual(["Cargo.toml"]);
@@ -692,6 +759,52 @@ describe("rustVersionStrategy", () => {
     );
 
     expect(impacted).toEqual(["crates/util/Cargo.toml"]);
+  });
+
+  it("does not infer a virtual workspace name from a member crate", () => {
+    const cwd = useFixture("workspace-panache-like");
+
+    expect(
+      rustVersionStrategy.readPackageName?.(cwd, {
+        version: 1,
+        "release-type": "rust",
+      }),
+    ).toBeNull();
+  });
+
+  it("reads the configured crate name even when a workspace member sorts first", () => {
+    const cwd = makeTempDir("workspace-root-name");
+    write(
+      cwd,
+      "Cargo.toml",
+      [
+        "[package]",
+        'name = "root-crate"',
+        'version = "1.0.0"',
+        "[workspace]",
+        'members = ["a-member"]',
+        "",
+      ].join("\n"),
+    );
+    write(
+      cwd,
+      "a-member/Cargo.toml",
+      '[package]\nname = "member-crate"\nversion = "1.0.0"\n',
+    );
+
+    expect(
+      rustVersionStrategy.readPackageName?.(cwd, {
+        version: 1,
+        "release-type": "rust",
+      }),
+    ).toBe("root-crate");
+    expect(
+      rustVersionStrategy.readPackageName?.(cwd, {
+        version: 1,
+        "release-type": "rust",
+        "version-file": "a-member/Cargo.toml",
+      }),
+    ).toBe("member-crate");
   });
 
   it("surfaces strategy package-name and hook capabilities", () => {

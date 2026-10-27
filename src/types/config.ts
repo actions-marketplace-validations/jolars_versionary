@@ -2,6 +2,11 @@ export type ConfigFileFormat = "jsonc" | "json" | "toml" | "js";
 export type VersionaryChangelogFormat = "markdown-changelog" | "r-news";
 export type ReleaseReferenceCommentsMode = "off" | "best-effort" | "strict";
 
+export type VersionaryCommitOverride = (
+  | { skip: true; message?: never }
+  | { message: string; skip?: never }
+) & { reason?: string };
+
 export interface VersionaryArtifactRule {
   type: "json" | "toml" | "yaml" | "nix" | "regex";
   path: string;
@@ -16,6 +21,10 @@ export interface VersionaryPackage {
   "package-name"?: string;
   "changelog-file"?: string;
   "changelog-format"?: VersionaryChangelogFormat;
+  "release-draft"?: boolean;
+  "release-latest"?: boolean;
+  /** @deprecated Use `allow-stable-major` with the inverse value. */
+  "bump-minor-pre-major"?: boolean;
   "allow-stable-major"?: boolean;
   "exclude-paths"?: string[];
   "extra-files"?: VersionaryArtifactRule[];
@@ -29,16 +38,19 @@ export interface VersionaryConfig {
   "changelog-file"?: string;
   "changelog-format"?: VersionaryChangelogFormat;
   "release-draft"?: boolean;
+  "release-latest"?: boolean;
   "release-reference-comments"?: ReleaseReferenceCommentsMode;
   "release-branch"?: string;
   "separate-release-prs"?: boolean;
   "baseline-file"?: string;
   "bootstrap-sha"?: string;
   "monorepo-mode"?: "independent" | "fixed";
+  /** @deprecated Use `allow-stable-major` with the inverse value. */
   "bump-minor-pre-major"?: boolean;
   "allow-stable-major"?: boolean;
   "include-commit-authors"?: boolean;
   "exclude-paths"?: string[];
+  "commit-overrides"?: Record<string, VersionaryCommitOverride>;
   "release-type"?: string | string[];
   packages?: Record<string, VersionaryPackage>;
 }

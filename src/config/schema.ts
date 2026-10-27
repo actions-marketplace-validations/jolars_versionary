@@ -1,5 +1,25 @@
 import { z } from "zod";
 
+const commitOverrideSchema = z.union([
+  z
+    .object({
+      skip: z.literal(true),
+      reason: z.string().trim().min(1).optional(),
+    })
+    .strict(),
+  z
+    .object({
+      message: z
+        .string()
+        .min(1)
+        .describe(
+          "Complete replacement Conventional Commit message, including any body and footers.",
+        ),
+      reason: z.string().trim().min(1).optional(),
+    })
+    .strict(),
+]);
+
 const artifactRuleSchema = z
   .object({
     type: z.enum(["json", "toml", "yaml", "nix", "regex"]),
@@ -59,6 +79,12 @@ const artifactRuleSchema = z
     }
   });
 
+const deprecatedBumpMinorPreMajorSchema = z.boolean().optional().meta({
+  deprecated: true,
+  description:
+    'Deprecated. Use "allow-stable-major" with the inverse value instead.',
+});
+
 const packageSchema = z
   .object({
     "release-type": z
@@ -67,12 +93,28 @@ const packageSchema = z
     "package-name": z.string().optional(),
     "changelog-file": z.string().optional(),
     "changelog-format": z.enum(["markdown-changelog", "r-news"]).optional(),
+    "release-draft": z.boolean().optional(),
+    "release-latest": z.boolean().optional(),
+    "bump-minor-pre-major": deprecatedBumpMinorPreMajorSchema,
     "allow-stable-major": z.boolean().optional(),
     "exclude-paths": z.array(z.string()).optional(),
     "extra-files": z.array(artifactRuleSchema).optional(),
     follows: z.array(z.string().min(1)).optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((value, ctx) => {
+    if (
+      value["bump-minor-pre-major"] !== undefined &&
+      value["allow-stable-major"] !== undefined
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          '"bump-minor-pre-major" and "allow-stable-major" are inverse aliases; configure only one.',
+        path: ["bump-minor-pre-major"],
+      });
+    }
+  });
 
 export const configSchema = z
   .object({
@@ -83,6 +125,7 @@ export const configSchema = z
     "changelog-file": z.string().optional(),
     "changelog-format": z.enum(["markdown-changelog", "r-news"]).optional(),
     "release-draft": z.boolean().optional(),
+    "release-latest": z.boolean().optional(),
     "release-reference-comments": z
       .enum(["off", "best-effort", "strict"])
       .optional(),
@@ -91,17 +134,39 @@ export const configSchema = z
     "baseline-file": z.string().optional(),
     "bootstrap-sha": z.string().optional(),
     "monorepo-mode": z.enum(["independent", "fixed"]).optional(),
-    "bump-minor-pre-major": z.boolean().optional(),
+    "bump-minor-pre-major": deprecatedBumpMinorPreMajorSchema,
     "allow-stable-major": z.boolean().optional(),
     "include-commit-authors": z.boolean().optional(),
     "exclude-paths": z.array(z.string()).optional(),
     "release-type": z
       .union([z.string().min(1), z.array(z.string().min(1)).min(1)])
       .optional(),
+    "commit-overrides": z
+      .record(
+        z
+          .string()
+          .regex(
+            /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u,
+            "Expected a full, lowercase commit SHA.",
+          ),
+        commitOverrideSchema,
+      )
+      .optional(),
     packages: z.record(z.string().min(1), packageSchema).optional(),
   })
   .strict()
   .superRefine((value, ctx) => {
+    if (
+      value["bump-minor-pre-major"] !== undefined &&
+      value["allow-stable-major"] !== undefined
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          '"bump-minor-pre-major" and "allow-stable-major" are inverse aliases; configure only one.',
+        path: ["bump-minor-pre-major"],
+      });
+    }
     const packages = value.packages;
     if (value["separate-release-prs"]) {
       if (!packages || Object.keys(packages).length === 0) {

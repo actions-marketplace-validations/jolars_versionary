@@ -185,9 +185,6 @@ export function bumpVersion(
     if (parsed.major === 0 && !allowStableMajor) {
       return `0.${parsed.minor + 1}.0`;
     }
-    if (parsed.major === 0 && allowStableMajor) {
-      return "1.0.0";
-    }
     return `${parsed.major + 1}.0.0`;
   }
 

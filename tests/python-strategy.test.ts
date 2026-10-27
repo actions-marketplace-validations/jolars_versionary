@@ -243,6 +243,29 @@ describe("pythonVersionStrategy pyproject.toml mode", () => {
     );
   });
 
+  it.each(["src/demo/__init__.py", "demo/__init__.py"])(
+    "updates nested package %s without changing the root package",
+    (modulePath) => {
+      const cwd = makeTempDir("write-nested-init");
+      const manifest = "packages/client/pyproject.toml";
+      writeFile(cwd, manifest, '[project]\nname = "demo"\nversion = "1.0.0"\n');
+      writeFile(cwd, modulePath, '__version__ = "9.0.0"\n');
+      const nestedModule = path.join("packages/client", modulePath);
+      writeFile(cwd, nestedModule, '__version__ = "1.0.0"\n');
+
+      const updated = pythonVersionStrategy.writeVersion(
+        cwd,
+        { ...baseConfig, "version-file": manifest },
+        "1.1.0",
+      );
+
+      expect(updated).toEqual([manifest, nestedModule]);
+      expect(readFile(cwd, manifest)).toContain('version = "1.1.0"');
+      expect(readFile(cwd, nestedModule)).toBe('__version__ = "1.1.0"\n');
+      expect(readFile(cwd, modulePath)).toBe('__version__ = "9.0.0"\n');
+    },
+  );
+
   it("normalizes hyphenated package names to underscored module dirs", () => {
     const cwd = makeTempDir("write-init-hyphen");
     writeFile(
@@ -474,6 +497,27 @@ describe("pythonVersionStrategy readPackageName", () => {
     );
   });
 
+  it("reads the configured manifest instead of the root pyproject.toml", () => {
+    const cwd = makeTempDir("name-subpackage");
+    writeFile(
+      cwd,
+      "pyproject.toml",
+      '[project]\nname = "root-project"\nversion = "1.0.0"\n',
+    );
+    writeFile(
+      cwd,
+      "packages/client/pyproject.toml",
+      '[project]\nname = "python-client"\nversion = "1.0.0"\n',
+    );
+
+    expect(
+      pythonVersionStrategy.readPackageName?.(cwd, {
+        ...baseConfig,
+        "version-file": "packages/client/pyproject.toml",
+      }),
+    ).toBe("python-client");
+  });
+
   it("returns null when pyproject.toml is missing (e.g. source-file mode without manifest)", () => {
     const cwd = makeTempDir("name-no-pyproject");
     writeFile(cwd, "src/demo/__init__.py", '__version__ = "1.0.0"\n');
@@ -502,6 +546,16 @@ const skipShellTests = process.platform === "win32";
 describe.skipIf(skipShellTests)(
   "pythonVersionStrategy finalizeVersionWrites",
   () => {
+    const finalizeContext = {
+      releaseCommitSha: "abc",
+      releaseDate: "2026-05-07",
+    };
+    const rootWrite = {
+      packagePath: ".",
+      versionFile: "pyproject.toml",
+      version: "1.1.0",
+    };
+
     function withShimmedPath(
       cwd: string,
       shims: ReadonlyArray<{ name: string; recordPath: string }>,
@@ -530,10 +584,11 @@ describe.skipIf(skipShellTests)(
 
     it("returns empty array when no lockfiles are present", () => {
       const cwd = makeTempDir("finalize-empty");
-      const result = pythonVersionStrategy.finalizeVersionWrites?.(cwd, [], {
-        releaseCommitSha: "abc",
-        releaseDate: "2026-05-07",
-      });
+      const result = pythonVersionStrategy.finalizeVersionWrites?.(
+        cwd,
+        [rootWrite],
+        finalizeContext,
+      );
       expect(result).toEqual([]);
     });
 
@@ -549,10 +604,11 @@ describe.skipIf(skipShellTests)(
         { name: "pdm", recordPath },
       ]);
       try {
-        const result = pythonVersionStrategy.finalizeVersionWrites?.(cwd, [], {
-          releaseCommitSha: "abc",
-          releaseDate: "2026-05-07",
-        });
+        const result = pythonVersionStrategy.finalizeVersionWrites?.(
+          cwd,
+          [rootWrite],
+          finalizeContext,
+        );
         expect(result).toEqual(["pdm.lock", "poetry.lock", "uv.lock"]);
         const log = fs.readFileSync(recordPath, "utf8");
         expect(log).toContain("lock");
@@ -569,11 +625,125 @@ describe.skipIf(skipShellTests)(
       const recordPath = path.join(cwd, "invocations.log");
       const { restore } = withShimmedPath(cwd, [{ name: "uv", recordPath }]);
       try {
-        const result = pythonVersionStrategy.finalizeVersionWrites?.(cwd, [], {
-          releaseCommitSha: "abc",
-          releaseDate: "2026-05-07",
-        });
+        const result = pythonVersionStrategy.finalizeVersionWrites?.(
+          cwd,
+          [rootWrite],
+          finalizeContext,
+        );
         expect(result).toEqual(["uv.lock"]);
+      } finally {
+        restore();
+      }
+    });
+
+    it("refreshes a lockfile in an affected nested package directory", () => {
+      const cwd = makeTempDir("finalize-nested");
+      writeFile(cwd, "packages/python/poetry.lock", "stub\n");
+      writeFile(cwd, "packages/python/uv.lock", "stub\n");
+      writeFile(cwd, "packages/python/pdm.lock", "stub\n");
+      const recordPath = path.join(cwd, "invocations.log");
+      const { restore } = withShimmedPath(cwd, [
+        { name: "poetry", recordPath },
+        { name: "uv", recordPath },
+        { name: "pdm", recordPath },
+      ]);
+      try {
+        const result = pythonVersionStrategy.finalizeVersionWrites?.(
+          cwd,
+          [
+            {
+              packagePath: "packages/python",
+              versionFile: "packages/python/pyproject.toml",
+              version: "1.1.0",
+            },
+          ],
+          finalizeContext,
+        );
+        expect(result).toEqual([
+          "packages/python/pdm.lock",
+          "packages/python/poetry.lock",
+          "packages/python/uv.lock",
+        ]);
+        const log = fs.readFileSync(recordPath, "utf8");
+        expect(
+          log
+            .split("\n")
+            .filter((line) =>
+              line.startsWith(path.join(cwd, "packages/python")),
+            ),
+        ).toHaveLength(3);
+        expect(log).toContain("--no-update");
+        expect(log).toContain("--update-reuse");
+      } finally {
+        restore();
+      }
+    });
+
+    it("processes each affected package directory once", () => {
+      const cwd = makeTempDir("finalize-multiple");
+      writeFile(cwd, "packages/a/uv.lock", "stub\n");
+      writeFile(cwd, "packages/b/uv.lock", "stub\n");
+      const recordPath = path.join(cwd, "invocations.log");
+      const { restore } = withShimmedPath(cwd, [{ name: "uv", recordPath }]);
+      try {
+        const result = pythonVersionStrategy.finalizeVersionWrites?.(
+          cwd,
+          [
+            {
+              packagePath: "packages/a",
+              versionFile: "packages/a/pyproject.toml",
+              version: "1.1.0",
+            },
+            {
+              packagePath: "packages/a",
+              versionFile: "packages/a/src/a/__init__.py",
+              version: "1.1.0",
+            },
+            {
+              packagePath: "packages/b",
+              versionFile: "packages/b/pyproject.toml",
+              version: "2.1.0",
+            },
+          ],
+          finalizeContext,
+        );
+        expect(result).toEqual(["packages/a/uv.lock", "packages/b/uv.lock"]);
+        expect(fs.readFileSync(recordPath, "utf8")).toBe(
+          [
+            `${path.join(cwd, "packages/a")} lock`,
+            `${path.join(cwd, "packages/b")} lock`,
+            "",
+          ].join("\n"),
+        );
+      } finally {
+        restore();
+      }
+    });
+
+    it("refreshes one shared ancestor lockfile once", () => {
+      const cwd = makeTempDir("finalize-shared");
+      writeFile(cwd, "uv.lock", "stub\n");
+      const recordPath = path.join(cwd, "invocations.log");
+      const { restore } = withShimmedPath(cwd, [{ name: "uv", recordPath }]);
+      try {
+        const result = pythonVersionStrategy.finalizeVersionWrites?.(
+          cwd,
+          [
+            {
+              packagePath: "packages/a",
+              versionFile: "packages/a/pyproject.toml",
+              version: "1.1.0",
+            },
+            {
+              packagePath: "packages/b",
+              versionFile: "packages/b/pyproject.toml",
+              version: "2.1.0",
+            },
+          ],
+          finalizeContext,
+        );
+        expect(result).toEqual(["uv.lock"]);
+        expect(fs.readFileSync(recordPath, "utf8")).toBe(`${cwd} lock\n`);
       } finally {
         restore();
       }
@@ -586,10 +756,11 @@ describe.skipIf(skipShellTests)(
       process.env.PATH = makeTempDir("finalize-empty-path");
       try {
         expect(() =>
-          pythonVersionStrategy.finalizeVersionWrites?.(cwd, [], {
-            releaseCommitSha: "abc",
-            releaseDate: "2026-05-07",
-          }),
+          pythonVersionStrategy.finalizeVersionWrites?.(
+            cwd,
+            [rootWrite],
+            finalizeContext,
+          ),
         ).toThrow(/Failed to refresh uv\.lock.*uv is on PATH/u);
       } finally {
         process.env.PATH = previous;

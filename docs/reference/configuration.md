@@ -26,7 +26,7 @@ is the single source of truth for the config shape.
 | `version`                    | `1`                   | — (required)             | Config-format version. Must be `1`. |
 | `$schema`                    | string                | —                        | JSON Schema URL for editor support. |
 | `release-type`               | string \| string[]    | `"simple"`               | The [strategy](/reference/strategies) (or array of strategies) used to read/write versions. |
-| `review-mode`                | `"direct"` \| `"pr"`  | `"pr"`                   | Release style. `pr` opens a release PR; `direct` skips it. See [workflows](/guide/workflows). |
+| `review-mode`                | `"direct"` \| `"pr"`  | `"pr"`                   | Release style. `pr` opens a release PR; `direct` commits to the triggering branch and publishes in one run. See [workflows](/guide/workflows). |
 | `version-file`               | string                | strategy-specific        | Path to the primary version source. Default depends on `release-type` (see table below). |
 | `changelog-file`             | string                | `CHANGELOG.md` / `NEWS.md` | Path to the changelog. Defaults to `NEWS.md` for the R strategy, `CHANGELOG.md` otherwise. |
 | `changelog-format`           | `"markdown-changelog"` \| `"r-news"` | strategy-specific | Changelog format. Defaults to `r-news` for the R strategy, `markdown-changelog` otherwise. |
@@ -35,13 +35,73 @@ is the single source of truth for the config shape.
 | `baseline-file`              | string                | `".versionary-manifest.json"` | File tracking the baseline SHA for deterministic commit ranges. |
 | `bootstrap-sha`              | string                | —                        | First-run baseline commit when adopting Versionary on existing history. |
 | `release-draft`              | boolean               | `false`                  | Publish GitHub Releases as drafts. |
+| `release-latest`             | boolean               | `true` for root; `false` otherwise | Request GitHub Latest promotion for new releases. See [inheritance](#release-latest). |
 | `release-reference-comments` | `"off"` \| `"best-effort"` \| `"strict"` | `"off"` | Whether to comment on linked issues/PRs when released. See below. |
 | `monorepo-mode`              | `"independent"` \| `"fixed"` | —                 | Enables [monorepo](/guide/monorepos) planning. |
 | `packages`                   | object                | —                        | Per-package configuration (see [packages](#packages)). |
-| `allow-stable-major`         | boolean               | `false`                  | Allow a breaking change on `0.y.z` to bump to `1.0.0`. See [pre-1.0 policy](/guide/versioning#pre-1-0-policy). |
+| `allow-stable-major`         | boolean               | `false`                  | Allow a breaking `0.y.z` release to become `1.0.0`. See [pre-1.0 policy](/guide/versioning#pre-1-0-policy). |
 | `exclude-paths`              | string[]              | —                        | Glob/path prefixes whose changes don't, on their own, count toward a bump. Applies repo-wide and to every package. |
-| `bump-minor-pre-major`       | boolean               | —                        | Accepted by the schema; not yet wired into release logic. Use `allow-stable-major` for pre-1.0 control. |
+| `commit-overrides`           | object                | —                        | Exclusions or replacement messages keyed by full commit SHA. See [commit overrides](#commit-overrides). |
 | `include-commit-authors`     | boolean               | —                        | Accepted by the schema; not yet wired into changelog rendering. |
+
+### `commit-overrides`
+
+Correct release metadata for commits that have already landed without rewriting
+Git history. Each key is a full, lowercase commit SHA. Each value contains
+either `skip: true` or a `message`, plus an optional `reason`:
+
+```jsonc
+{
+  "version": 1,
+  "commit-overrides": {
+    "0123456789abcdef0123456789abcdef01234567": {
+      "skip": true,
+      "reason": "Fixes a regression introduced after the previous release"
+    },
+    "89abcdef0123456789abcdef0123456789abcdef": {
+      "message": "perf: cache commit lookups",
+      "reason": "The original commit was incorrectly labeled feat"
+    }
+  }
+}
+```
+
+`skip: true` excludes the commit from both version calculation and generated
+release notes, including any `Release-As` footer. Its code still ships.
+`message` replaces the complete message used for release analysis and notes,
+including the body and footers. Include any breaking markers or issue references
+that should remain. The replacement must be a valid Conventional Commit.
+Versionary preserves the original SHA and uses the original changed files to
+attribute the commit to packages. Existing suppression of revert pairs still
+uses the original commit relationships.
+
+Overrides apply only within each package's unreleased commit window. They do
+not change earlier releases. Configured SHAs must resolve to commits in the
+current branch's history. `versionary plan` includes a `commitOverrides` array
+with the original messages, overrides, reasons, and package paths where they
+still apply. An empty `packages` array means the override has been consumed.
+
+The [`exclude` and `correct` commands](./cli#exclude-and-correct) accept short
+SHAs and write these entries while preserving JSONC comments. Commit the
+configuration change so local planning and CI use the same metadata. To undo an
+override before release, remove its entry.
+
+Versionary removes consumed entries during a later release's preparation. In a
+monorepo, it retains an entry while any configured package still has the commit
+in its release window. Cleanup does not require unrelated package release PRs
+to merge together.
+
+### Deprecated: `bump-minor-pre-major`
+
+`bump-minor-pre-major` remains accepted at the repository root and package
+level for compatibility with Versionary 1.3.0. Versionary warns when it is used
+and immediately normalizes it to `allow-stable-major`:
+
+- `bump-minor-pre-major: true` becomes `allow-stable-major: false`.
+- `bump-minor-pre-major: false` becomes `allow-stable-major: true`.
+
+Replace the deprecated key with the corresponding canonical value. Do not
+configure both keys in the same object; Versionary rejects that ambiguity.
 
 ### `release-reference-comments`
 
@@ -75,19 +135,98 @@ See [Strategies](/reference/strategies) for the full behavior of each.
 A map keyed by package path (`"."` for the repository root). Used with
 `monorepo-mode`. Each entry inherits the top-level config and may override:
 
-| Key                  | Type               | Description |
-| -------------------- | ------------------ | ----------- |
-| `release-type`       | string \| string[] | Strategy for this package, overriding the top-level value. |
-| `package-name`       | string             | Override the release/tag name (otherwise derived from the version file or path). |
-| `changelog-file`     | string             | Package-specific changelog path (written under the package directory). |
-| `changelog-format`   | `"markdown-changelog"` \| `"r-news"` | Package-specific changelog format. |
-| `allow-stable-major` | boolean            | Override the pre-1.0 policy for this package's own bump. |
-| `exclude-paths`      | string[]           | Paths (relative to the package) to exclude; unioned with the top-level list. |
-| `follows`            | string[]           | Source packages this package follows; see [follows](/guide/monorepos#follows). |
-| `extra-files`        | artifact-rule[]    | Additional files to update with the new version (see below). |
+| Key                     | Type                                      | Description |
+| ----------------------- | ----------------------------------------- | ----------- |
+| `release-type`          | string \| string[]                        | Strategy for this package, overriding the top-level value. |
+| `package-name`          | string                                    | Override the release/tag name (otherwise derived from the version file or path). |
+| `changelog-file`        | string                                    | Package-specific changelog path (written under the package directory). |
+| `changelog-format`      | `"markdown-changelog"` \| `"r-news"`    | Package-specific changelog format. |
+| `allow-stable-major`    | boolean                                   | Override the pre-1.0 policy for this package's own bump. |
+| `exclude-paths`         | string[]                                  | Paths (relative to the package) to exclude; unioned with the top-level list. |
+| `follows`               | string[]                                  | Source packages this package follows; see [follows](/guide/monorepos#follows). |
+| `extra-files`           | artifact-rule[]                           | Additional files to update with the new version (see below). |
+| `release-draft`         | boolean                                   | Override whether this package's GitHub Release is created as a draft. |
+| `release-latest`        | boolean                                   | Override whether this package's new GitHub Release requests Latest promotion. |
 
 See the [monorepos guide](/guide/monorepos) for tag naming, `follows`, and
 filtering semantics.
+
+### `release-draft`
+
+Package-level `release-draft` values override the top-level setting. Packages
+that omit the key inherit the top-level value; if neither level sets it,
+Versionary creates a non-draft release. An explicitly configured root package
+at `"."` follows the same rule.
+
+This allows packages with different publication gates to share one monorepo
+configuration:
+
+```jsonc
+{
+  "version": 1,
+  "release-type": "simple",
+  "monorepo-mode": "independent",
+  "separate-release-prs": true,
+  "release-draft": false,
+  "packages": {
+    "packages/python": {
+      "release-type": "python"
+    },
+    "packages/r": {
+      "release-type": "r",
+      "release-draft": true
+    },
+    "packages/julia": {
+      "release-type": "julia",
+      "release-draft": true
+    }
+  }
+}
+```
+
+Here, the Python package inherits `false`, while the R and Julia packages
+create draft GitHub Releases. Draft selection does not change package grouping
+or release PR planning.
+
+### `release-latest`
+
+Controls whether a new GitHub Release requests **Latest** promotion. The setting
+applies in both PR and direct release workflows. Versionary resolves it for each
+release target in this order:
+
+1. The package's `release-latest`, including an explicit root package at `"."`.
+2. The top-level `release-latest`.
+3. `true` for the root package and `false` for other packages.
+
+An explicit `false` overrides an inherited `true`. For example, this configuration
+promotes only the root package's releases:
+
+```jsonc
+{
+  "version": 1,
+  "release-type": "node",
+  "monorepo-mode": "independent",
+  "release-latest": false,
+  "packages": {
+    ".": { "release-latest": true },
+    "packages/helper": {}
+  }
+}
+```
+
+GitHub has one Latest release per repository. Setting the top-level value to
+`true` makes every inheriting package request promotion, so use package overrides
+when only one package should hold that designation. GitHub does not allow drafts
+or prereleases to become Latest.
+
+For a [maintenance branch](/guide/workflows#maintenance-releases), set
+`release-latest: false` to keep its releases from replacing the current line's
+Latest release. This setting does not change version calculation or mark a release
+as a prerelease. Registry publishing and website deployment use their own policies.
+
+Retries apply the configured policy when creating missing release metadata.
+Existing GitHub Releases are reused without changing their metadata, so changing
+this setting does not retroactively promote or demote an existing release.
 
 ## `extra-files`
 

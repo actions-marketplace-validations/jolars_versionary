@@ -61,7 +61,9 @@ The default when `release-type` is omitted.
 
 - **Version source:** `Cargo.toml` `[package].version`. `version-file` must
   point at a `Cargo.toml`.
-- **Package name:** `Cargo.toml` `[package].name`.
+- **Package name:** `[package].name` in the configured `Cargo.toml`. A virtual
+  workspace has no package name. Root release comments fall back to the
+  repository directory name; use `packages["."].package-name` to override it.
 - **Workspaces:** virtual/workspace manifests expand to their members.
   Crates using `version.workspace = true` resolve and update
   `[workspace.package].version` in the owning workspace manifest.
@@ -69,8 +71,10 @@ The default when `release-type` is omitted.
   crate, its version requirement is rewritten across `[dependencies]`,
   `[dev-dependencies]`, `[build-dependencies]`, and their `[target.*]` variants.
   Operators (`^`, `~`, `>=`, …) and table vs. string forms are preserved.
-- **Lockfiles:** `Cargo.lock` files are refreshed via `cargo generate-lockfile`.
-  `cargo` must be on `PATH` during PR preparation when a `Cargo.lock` exists.
+- **Lockfiles:** `Cargo.lock` files are refreshed via `cargo update --workspace`.
+  Existing external dependency versions are preserved unless changed
+  requirements need a new resolution. `cargo` must be on `PATH` during PR
+  preparation when a `Cargo.lock` exists.
 - **Publishability:** crates with `publish = false`, an empty registry list, or
   either inherited via `publish.workspace = true`, are exempt from
   [published dependency freshness](../guide/monorepos#stale-dependencies).
@@ -102,7 +106,9 @@ shipping.
   `src/<pkg>/__init__.py`) to update a `__version__ = "X.Y.Z"` assignment
   instead of the TOML.
 - **`__init__.py` discovery:** when using `pyproject.toml`, a matching
-  `__init__.py` with `__version__` in standard locations is also updated.
+  `__init__.py` with `__version__` in standard locations is also updated. These
+  locations are relative to the manifest's directory, including for nested
+  monorepo packages.
 - **Package name:** `[project].name`, falling back to `[tool.poetry].name`.
 - **Lockfiles:** `poetry.lock`, `uv.lock`, and `pdm.lock` at the package root
   are refreshed by shelling out to the matching tool (`poetry lock --no-update`,

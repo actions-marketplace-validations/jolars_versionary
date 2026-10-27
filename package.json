@@ -1,6 +1,6 @@
 {
   "name": "versionary",
-  "version": "1.2.0",
+  "version": "1.7.1",
   "description": "Automatic release framework based on conventional commits and semantic versioning",
   "keywords": [
     "releasing",
@@ -38,6 +38,8 @@
     "verify": "tsx src/cli/index.ts verify",
     "run": "tsx src/cli/index.ts run",
     "plan": "tsx src/cli/index.ts plan",
+    "exclude": "tsx src/cli/index.ts exclude",
+    "correct": "tsx src/cli/index.ts correct",
     "changelog": "tsx src/cli/index.ts changelog",
     "pr": "tsx src/cli/index.ts pr",
     "release": "tsx src/cli/index.ts release",
@@ -58,7 +60,7 @@
     "typescript": "^7.0.2",
     "vite": "^8.0.0",
     "vitepress": "^1.6.4",
-    "vitest": "^4.1.4"
+    "vitest": "^5.0.0"
   },
   "pnpm": {
     "overrides": {

@@ -2,9 +2,11 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { pruneCommitOverrides } from "../config/commit-overrides.js";
 import { loadConfig } from "../config/load-config.js";
 import type { ParsedCommit } from "../git/commits.js";
 import { ensureGitIdentity } from "../git/identity.js";
+import { redactCredentials } from "../git/redact.js";
 import { getScmClient } from "../scm/client.js";
 import {
   resolvePackageStrategyContext,
@@ -223,7 +225,7 @@ function fetchRemoteReleaseBranch(cwd: string, branch: string): string {
   return remoteRef;
 }
 
-function buildReleaseTargets(
+export function buildReleaseTargets(
   cwd: string,
   plan: ReleasePlan,
   loadedConfig: ReturnType<typeof loadConfig>["config"],
@@ -293,7 +295,7 @@ function buildReleaseTargets(
 }
 
 interface PackageReleaseMetadata {
-  releaseName: string;
+  packageName: string;
   tagPrefix: string;
 }
 
@@ -321,7 +323,9 @@ function buildPackageReleaseMetadata(
       packageContext.config,
     );
     metadataByPath[pkg.path] = {
-      releaseName,
+      packageName:
+        packageContext.strategy.readPackageName?.(cwd, packageContext.config) ??
+        releaseName,
       tagPrefix: normalizeReleaseNameForTag(releaseName),
     };
   }
@@ -381,7 +385,7 @@ export function renderPendingReleaseReviewRequestBody(
  */
 export function preparePendingReleasePr(
   cwd = process.cwd(),
-  options: { logger?: VersionaryPluginContext["logger"] } = {},
+  options: { logger?: VersionaryPluginContext["logger"]; branch?: string } = {},
 ): PendingReleasePrResult {
   const targets = readPendingReleaseTargets(cwd);
   if (!hasFullyUntaggedPendingRelease(cwd)) {
@@ -390,7 +394,8 @@ export function preparePendingReleasePr(
 
   ensureCleanWorktree(cwd, options.logger);
   const loaded = loadConfig(cwd);
-  const branch = loaded.config["release-branch"] ?? "versionary/release";
+  const branch =
+    options.branch ?? loaded.config["release-branch"] ?? "versionary/release";
   const title = formatReleaseCommitTitle(targets);
   const releaseBaselineSha = execFileSync("git", ["rev-parse", "HEAD"], {
     cwd,
@@ -535,7 +540,7 @@ export function preparePendingSeparateReleasePrs(
 
 export function prepareReleasePr(
   cwd = process.cwd(),
-  options: { logger?: VersionaryPluginContext["logger"] } = {},
+  options: { logger?: VersionaryPluginContext["logger"]; branch?: string } = {},
 ): {
   branch: string;
   title: string;
@@ -694,7 +699,7 @@ export function prepareReleasePr(
     const packageSection =
       packageChangelogFormat === "r-news"
         ? renderRNewsReleaseNotes({
-            packageName: packageMetadata.releaseName,
+            packageName: packageMetadata.packageName,
             nextVersion: packagePlan.nextVersion,
             commits: packagePlan.commits,
             cwd,
@@ -719,7 +724,7 @@ export function prepareReleasePr(
   }
   const releaseTargets = buildReleaseTargets(cwd, plan, loaded.config);
 
-  const branch = plan.releaseBranchPrefix;
+  const branch = options.branch ?? plan.releaseBranchPrefix;
   const title = formatReleaseCommitTitle(releaseTargets);
   const hasRemoteReleaseBranch = remoteReleaseBranchExists(cwd, branch);
   const remoteReleaseRef = hasRemoteReleaseBranch
@@ -730,11 +735,13 @@ export function prepareReleasePr(
     cwd,
     stdio: ["ignore", "pipe", "ignore"],
   });
+  const updatedConfigFiles = pruneCommitOverrides(cwd, plan);
   const filesToAdd = [
     ...new Set([
       ...updatedVersionFiles,
       ...updatedArtifactFiles,
       ...updatedChangelogFiles,
+      ...updatedConfigFiles,
     ]),
   ];
   execFileSync("git", ["add", ...filesToAdd], {
@@ -843,6 +850,7 @@ function materializeCandidateChanges(
     baselineSha: string;
     branch?: string;
     writePackageState?: boolean;
+    pruneOverrides?: boolean;
   },
 ): MaterializedCandidate {
   const loaded = loadConfig(cwd);
@@ -969,7 +977,7 @@ function materializeCandidateChanges(
     const section =
       packageChangelogFormat === "r-news"
         ? renderRNewsReleaseNotes({
-            packageName: metadata.releaseName,
+            packageName: metadata.packageName,
             nextVersion: packagePlan.nextVersion,
             commits: packagePlan.commits,
             cwd,
@@ -994,6 +1002,9 @@ function materializeCandidateChanges(
   }
 
   const targets = buildReleaseTargets(cwd, plan, loaded.config);
+  const updatedConfigFiles = options.pruneOverrides
+    ? pruneCommitOverrides(cwd, plan)
+    : [];
   const stateFiles =
     options.writePackageState && options.branch
       ? writePackageReleaseState(
@@ -1009,6 +1020,7 @@ function materializeCandidateChanges(
         ...updatedVersionFiles,
         ...updatedArtifactFiles,
         ...updatedChangelogFiles,
+        ...updatedConfigFiles,
         ...stateFiles,
       ]),
     ].sort((a, b) => a.localeCompare(b)),
@@ -1078,6 +1090,8 @@ export function prepareSeparateReleasePrs(
   if (initialCohorts.length === 0) {
     return [];
   }
+  // One candidate owns shared config cleanup so cleanup alone cannot couple PRs.
+  const cleanupOwner = initialCohorts[0]?.[0];
   buildReleaseTargets(cwd, plan, loaded.config);
   ensureCleanWorktree(cwd, options.logger);
   const baselineSha = execFileSync("git", ["rev-parse", "HEAD"], {
@@ -1100,7 +1114,7 @@ export function prepareSeparateReleasePrs(
       return materializeCandidateChanges(
         worktree,
         scopeReleasePlan(plan, packagePaths),
-        { baselineSha },
+        { baselineSha, pruneOverrides: packagePaths.includes(cleanupOwner) },
       ).files;
     });
     const prepared: PreparedSeparateReleasePr[] = [];
@@ -1130,6 +1144,7 @@ export function prepareSeparateReleasePrs(
         baselineSha,
         branch,
         writePackageState: true,
+        pruneOverrides: packagePaths.includes(cleanupOwner),
       });
       const title = formatReleaseCommitTitle(materialized.targets);
       if (!options["dry-run"]) {
@@ -1527,10 +1542,17 @@ export async function closeStaleReviewRequestIfExists(
 }
 
 export function pushReleaseBranch(cwd: string, branch: string): void {
-  execFileSync("git", ["push", "--force-with-lease", "origin", branch], {
-    cwd,
-    stdio: ["ignore", "pipe", "ignore"],
-  });
+  try {
+    execFileSync("git", ["push", "--force-with-lease", "origin", branch], {
+      cwd,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    // Captured stderr is included in the message. Do not retain the original
+    // error as a cause: its output buffers may contain credentials.
+    throw new Error(redactCredentials(message));
+  }
 }
 
 export function isReleaseCommitMessage(commitMessage: string): boolean {

@@ -28,6 +28,9 @@
     "release-draft": {
       "type": "boolean"
     },
+    "release-latest": {
+      "type": "boolean"
+    },
     "release-reference-comments": {
       "type": "string",
       "enum": ["off", "best-effort", "strict"]
@@ -49,6 +52,8 @@
       "enum": ["independent", "fixed"]
     },
     "bump-minor-pre-major": {
+      "deprecated": true,
+      "description": "Deprecated. Use \"allow-stable-major\" with the inverse value instead.",
       "type": "boolean"
     },
     "allow-stable-major": {
@@ -78,6 +83,48 @@
           }
         }
       ]
+    },
+    "commit-overrides": {
+      "type": "object",
+      "propertyNames": {
+        "type": "string",
+        "pattern": "^(?:[a-f0-9]{40}|[a-f0-9]{64})$"
+      },
+      "additionalProperties": {
+        "anyOf": [
+          {
+            "type": "object",
+            "properties": {
+              "skip": {
+                "type": "boolean",
+                "const": true
+              },
+              "reason": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": ["skip"],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "message": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Complete replacement Conventional Commit message, including any body and footers."
+              },
+              "reason": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": ["message"],
+            "additionalProperties": false
+          }
+        ]
+      }
     },
     "packages": {
       "type": "object",
@@ -113,6 +160,17 @@
           "changelog-format": {
             "type": "string",
             "enum": ["markdown-changelog", "r-news"]
+          },
+          "release-draft": {
+            "type": "boolean"
+          },
+          "release-latest": {
+            "type": "boolean"
+          },
+          "bump-minor-pre-major": {
+            "deprecated": true,
+            "description": "Deprecated. Use \"allow-stable-major\" with the inverse value instead.",
+            "type": "boolean"
           },
           "allow-stable-major": {
             "type": "boolean"
@@ -181,10 +239,24 @@
             }
           }
         },
-        "additionalProperties": false
+        "additionalProperties": false,
+        "allOf": [
+          {
+            "not": {
+              "required": ["bump-minor-pre-major", "allow-stable-major"]
+            }
+          }
+        ]
       }
     }
   },
   "required": ["version"],
-  "additionalProperties": false
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "not": {
+        "required": ["bump-minor-pre-major", "allow-stable-major"]
+      }
+    }
+  ]
 }

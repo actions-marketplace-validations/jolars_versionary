@@ -36,6 +36,9 @@ describe("simple semver", () => {
     expect(bumpVersion("1.2.3", "minor")).toBe("1.3.0");
     expect(bumpVersion("1.2.3", "major")).toBe("2.0.0");
     expect(bumpVersion("0.4.2", "major")).toBe("0.5.0");
+    expect(bumpVersion("0.4.2", "major", { allowStableMajor: false })).toBe(
+      "0.5.0",
+    );
     expect(bumpVersion("0.4.2", "major", { allowStableMajor: true })).toBe(
       "1.0.0",
     );

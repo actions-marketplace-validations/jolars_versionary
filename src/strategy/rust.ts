@@ -154,14 +154,15 @@ function ensureCargoLockUpToDate(cwd: string): string[] {
     const lockfilePath = path.join(cwd, lockfile);
     const before = fs.readFileSync(lockfilePath, "utf8");
     try {
-      execFileSync("cargo", ["generate-lockfile"], {
+      // Preserve locked external dependencies while updating local package versions.
+      execFileSync("cargo", ["update", "--workspace"], {
         cwd: path.dirname(lockfilePath),
         stdio: ["ignore", "pipe", "pipe"],
       });
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
       throw new Error(
-        `Failed to refresh ${lockfile} via "cargo generate-lockfile". Ensure cargo is installed and available in PATH. Details: ${message}`,
+        `Failed to refresh ${lockfile} via "cargo update --workspace". Ensure cargo is installed and available in PATH. Details: ${message}`,
       );
     }
     const after = fs.readFileSync(lockfilePath, "utf8");
@@ -1088,26 +1089,16 @@ export const rustVersionStrategy: VersionStrategy = {
   },
   readPackageName(cwd: string, config: VersionaryConfig): string | null {
     const versionFile = this.getVersionFile(config);
-    const manifests = collectRustTargetManifests(
-      cwd,
-      versionFile,
-      !config.packages,
-    );
-    const selectedManifest = manifests[0];
-    if (!selectedManifest) {
-      throw new Error(
-        `Configured rust target "${versionFile}" did not resolve to a Rust crate manifest.`,
-      );
-    }
-    const versionPath = path.join(cwd, selectedManifest);
+    const versionPath = path.join(cwd, versionFile);
     if (!fs.existsSync(versionPath)) {
-      throw new Error(`Versionary requires ${selectedManifest} to exist.`);
+      throw new Error(`Versionary requires ${versionFile} to exist.`);
     }
     const cargoTomlRaw = fs.readFileSync(versionPath, "utf8");
-    if (!isCrateManifest(selectedManifest, cargoTomlRaw)) {
+    // A virtual workspace has no package name of its own to return.
+    if (!isCrateManifest(versionFile, cargoTomlRaw)) {
       return null;
     }
-    return readCargoPackageName(cargoTomlRaw, selectedManifest);
+    return readCargoPackageName(cargoTomlRaw, versionFile);
   },
   isPublishable(
     cwd: string,

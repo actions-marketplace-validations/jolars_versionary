@@ -1,5 +1,68 @@
 # Changelog
 
+## [1.7.1](https://github.com/jolars/versionary/compare/v1.7.0...v1.7.1) (2026-10-27)
+
+### Bug Fixes
+
+- **python:** discover nested package versions ([`c6d5732`](https://github.com/jolars/versionary/commit/c6d5732fac651405a9f3425b4d37b8c8bbb05130))
+- **rust:** preserve locked dependency versions ([`f0a928b`](https://github.com/jolars/versionary/commit/f0a928bed1d02faa812a6e7c0c00eb9bd384c478)), fixes [#108](https://github.com/jolars/versionary/issues/108)
+
+## [1.7.0](https://github.com/jolars/versionary/compare/v1.6.1...v1.7.0) (2026-10-26)
+
+### Features
+
+- support commit exclusions and corrections ([`248a0fb`](https://github.com/jolars/versionary/commit/248a0fb8ae3012c0919d8435a4c9002991f837ce))
+
+### Bug Fixes
+
+- **deps:** update Vue to fix SSR XSS ([`896d15d`](https://github.com/jolars/versionary/commit/896d15d0d80b3e8b4ea2b4689dafaa2521993ac8))
+
+## [1.6.1](https://github.com/jolars/versionary/compare/v1.6.0...v1.6.1) (2026-10-19)
+
+### Bug Fixes
+
+- use package names in NEWS headings ([`c530021`](https://github.com/jolars/versionary/commit/c530021033ab4612773b73bc44badab16ae53c26)), fixes [#105](https://github.com/jolars/versionary/issues/105)
+- wait for npm before advancing action tags ([`0fc8690`](https://github.com/jolars/versionary/commit/0fc86903b654a1257e2935108e2ed7e3d1c1de1f))
+
+## [1.6.0](https://github.com/jolars/versionary/compare/v1.5.0...v1.6.0) (2026-09-30)
+
+### Features
+
+- **changelog:** add blankline after headings ([`623af22`](https://github.com/jolars/versionary/commit/623af22272735bb67b23565e9c8fd2260c9d00e7))
+
+### Bug Fixes
+
+- preserve release branch push diagnostics ([`518ba67`](https://github.com/jolars/versionary/commit/518ba6726a6f993177c44c2189a819e6f55711e9)), fixes [#101](https://github.com/jolars/versionary/issues/101)
+
+## [1.5.0](https://github.com/jolars/versionary/compare/v1.4.1...v1.5.0) (2026-09-29)
+
+### Features
+- configure latest status for maintenance releases ([`7d5e4cf`](https://github.com/jolars/versionary/commit/7d5e4cfd4d5e78064941d76af89df5901c66d29c)), closes [#98](https://github.com/jolars/versionary/issues/98)
+
+### Bug Fixes
+- resolve Rust workspace release names correctly ([`98f3329`](https://github.com/jolars/versionary/commit/98f332965f38de37ea29b2db66b76661fa90b513))
+
+## [1.4.1](https://github.com/jolars/versionary/compare/v1.4.0...v1.4.1) (2026-09-16)
+
+### Bug Fixes
+- skip forks without a release token ([`f05b150`](https://github.com/jolars/versionary/commit/f05b150298fe5ab6aa7c9cb0ecad10a8fbac62a4))
+- publish direct releases in one run ([`3922ca1`](https://github.com/jolars/versionary/commit/3922ca142b9bae3627c93a39b95feedeb775c2d9))
+
+## [1.4.0](https://github.com/jolars/versionary/compare/v1.3.0...v1.4.0) (2026-09-07)
+
+### Features
+- **config:** support per-package draft releases ([`694d86e`](https://github.com/jolars/versionary/commit/694d86e046da426dc69905806cd2ca27af9b3f58)), closes [#91](https://github.com/jolars/versionary/issues/91)
+
+### Bug Fixes
+- **verify:** allow package-only monorepos ([`beb4b83`](https://github.com/jolars/versionary/commit/beb4b8307b817bcc757469e29ae83c5e5213c0b4)), fixes [#90](https://github.com/jolars/versionary/issues/90)
+- **python:** refresh nested lockfiles ([`f0cd230`](https://github.com/jolars/versionary/commit/f0cd2303e3c5cc2ff51b91437d522a355e4ab346)), fixes [#89](https://github.com/jolars/versionary/issues/89)
+- **config:** deprecate pre-major alias ([`3b816c1`](https://github.com/jolars/versionary/commit/3b816c1db48350f96bfefe4a9c27cd519f0b7738))
+
+## [1.3.0](https://github.com/jolars/versionary/compare/v1.2.0...v1.3.0) (2026-09-05)
+
+### Features
+- wire pre-major bump policy ([`0ff9871`](https://github.com/jolars/versionary/commit/0ff98713649d01d107f575566ba4bcdde9a972df))
+
 ## [1.2.0](https://github.com/jolars/versionary/compare/v1.1.0...v1.2.0) (2026-09-01)
 
 ### Features
