@@ -1,5 +1,27 @@
 # Changelog
 
+## [1.10.0](https://github.com/jolars/versionary/compare/v1.9.0...v1.10.0) (2026-11-03)
+
+### Features
+
+- support per-package release modes ([`a09e593`](https://github.com/jolars/versionary/commit/a09e5933f80c4bc8e5372651984ec25c7d39e6f3))
+
+## [1.9.0](https://github.com/jolars/versionary/compare/v1.8.0...v1.9.0) (2026-10-29)
+
+### Features
+
+- add configurable checks for release PRs ([`5333fee`](https://github.com/jolars/versionary/commit/5333feed4b4aa4f63330542369adcd368ef9fff3))
+
+## [1.8.0](https://github.com/jolars/versionary/compare/v1.7.1...v1.8.0) (2026-10-28)
+
+### Features
+
+- support external release workflows ([`3754ab4`](https://github.com/jolars/versionary/commit/3754ab4db468b4a9d7ad4fc784a6afad6fde8e03))
+
+### Bug Fixes
+
+- recover squashed and subsequent releases ([`411284f`](https://github.com/jolars/versionary/commit/411284fc203e5cdb82794e13c094ae00602378f5))
+
 ## [1.7.1](https://github.com/jolars/versionary/compare/v1.7.0...v1.7.1) (2026-10-27)
 
 ### Bug Fixes

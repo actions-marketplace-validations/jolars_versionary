@@ -91,6 +91,7 @@ const packageSchema = z
       .union([z.string().min(1), z.array(z.string().min(1)).min(1)])
       .optional(),
     "package-name": z.string().optional(),
+    "release-mode": z.enum(["versionary", "external"]).optional(),
     "changelog-file": z.string().optional(),
     "changelog-format": z.enum(["markdown-changelog", "r-news"]).optional(),
     "release-draft": z.boolean().optional(),
@@ -121,6 +122,13 @@ export const configSchema = z
     $schema: z.string().optional(),
     version: z.literal(1),
     "review-mode": z.enum(["direct", "pr"]).optional(),
+    "release-mode": z.enum(["versionary", "external"]).optional(),
+    "release-pr-checks": z
+      .enum(["run", "skip"])
+      .optional()
+      .describe(
+        "Whether CI integration runs checks on Versionary release PRs.",
+      ),
     "version-file": z.string().optional(),
     "changelog-file": z.string().optional(),
     "changelog-format": z.enum(["markdown-changelog", "r-news"]).optional(),

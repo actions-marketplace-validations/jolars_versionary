@@ -3,6 +3,7 @@
 import { execFileSync } from "node:child_process";
 import path from "node:path";
 import { parseArgs } from "node:util";
+import { type CiDecision, evaluateCi } from "../ci.js";
 import { writeCommitOverride } from "../config/commit-overrides.js";
 import { loadConfig } from "../config/load-config.js";
 import { resolveCommitSha } from "../git/commit-overrides.js";
@@ -11,6 +12,7 @@ import {
   renderReleasePlanChangelog,
 } from "../release/changelog.js";
 import { runDirectRelease } from "../release/direct.js";
+import { hasExternalReleaseMode } from "../release/mode.js";
 import { createReleasePlan, type ReleasePlan } from "../release/plan.js";
 import {
   closeStaleReviewRequestIfExists,
@@ -25,7 +27,12 @@ import {
   reconcileSeparateReviewRequests,
   resolveReleaseHighlights,
 } from "../release/pr.js";
-import { runRelease, runReleaseDetailed } from "../release/release.js";
+import {
+  describeExternalRelease,
+  type ExternalReleaseResult,
+  runRelease,
+  runReleaseDetailed,
+} from "../release/release.js";
 import {
   hasFullyUntaggedPendingRelease,
   hasReleaseStateChangeAtHead,
@@ -149,9 +156,13 @@ interface RunJsonResult {
     | "pr-dry-run"
     | "release-skipped"
     | "release-dry-run"
+    | "release-ready"
+    | "release-waiting"
     | "release-published";
   message: string;
   releaseCreated: boolean;
+  releaseReady?: boolean;
+  externalReleaseTargets?: ExternalReleaseResult["releaseTargets"];
   tagNames: string[];
   reviewUrl?: string;
   branch?: string;
@@ -162,6 +173,8 @@ interface RunJsonResult {
     tag: string;
     version: string;
     dependencies: string[];
+    sha?: string;
+    notes?: string;
   }[];
   targets?: {
     tag: string;
@@ -176,8 +189,42 @@ function parseFlags(args: string[]): CliFlags {
   };
 }
 
-function emitJson(payload: RunJsonResult): void {
+let externalAtStart: ExternalReleaseResult | undefined;
+
+function emitJson(payload: RunJsonResult | CiDecision): void {
+  if (
+    payload.action !== "ci-evaluated" &&
+    externalAtStart &&
+    !payload.externalReleaseTargets
+  ) {
+    payload = {
+      ...payload,
+      externalReleaseTargets: externalAtStart.releaseTargets,
+      releaseReady:
+        payload.action === "release-ready" &&
+        externalAtStart.action === "release-ready",
+    };
+  }
   process.stdout.write(`${JSON.stringify(payload)}\n`);
+}
+
+function printExternalRelease(
+  result: ExternalReleaseResult,
+  flags: CliFlags,
+): void {
+  if (flags.json) {
+    emitJson({
+      action: result.action,
+      message: result.message,
+      releaseCreated: false,
+      tagNames: [],
+      releaseTargets: result.releaseTargets,
+      externalReleaseTargets: result.releaseTargets,
+      releaseReady: result.action === "release-ready",
+    });
+  } else {
+    console.log(result.message);
+  }
 }
 
 function reviewResultPayload(
@@ -244,12 +291,45 @@ async function recoverPendingReleaseIfNeeded(
   logger?: Console,
 ): Promise<boolean> {
   const cwd = process.cwd();
+  const loaded = loadConfig(cwd);
+  if (
+    hasExternalReleaseMode(loaded.config) &&
+    !hasFullyUntaggedPendingRelease(cwd) &&
+    !createReleasePlan(cwd).nextVersion
+  ) {
+    const result = await runReleaseDetailed(cwd, {
+      logger,
+      "dry-run": flags["dry-run"],
+    });
+    if (
+      result.action === "release-ready" ||
+      result.action === "release-waiting"
+    ) {
+      printExternalRelease(result, flags);
+      return true;
+    }
+    if (result.action === "release-dry-run") {
+      if (flags.json) {
+        emitJson({
+          action: result.action,
+          message: result.message,
+          releaseCreated: false,
+          tagNames: result.targets.map((target) => target.tag),
+          releaseTargets: result.releaseTargets,
+          targets: result.targets,
+        });
+      } else {
+        console.log(result.message);
+      }
+      return true;
+    }
+    return false;
+  }
   if (!hasFullyUntaggedPendingRelease(cwd)) {
     return false;
   }
 
   const pendingTargets = readPendingReleaseTargets(cwd);
-  const loaded = loadConfig(cwd);
   const releaseBranch = loaded.config["release-branch"] ?? "versionary/release";
   if (loaded.config["separate-release-prs"]) {
     const prepared = preparePendingSeparateReleasePrs(cwd, {
@@ -356,7 +436,32 @@ async function recoverPendingReleaseIfNeeded(
 async function main(): Promise<number> {
   const [, , command, ...args] = process.argv;
   const flags = parseFlags(args);
+  if (
+    (command === "run" || command === "pr") &&
+    hasExternalReleaseMode(loadConfig(process.cwd()).config)
+  ) {
+    // Preparing a PR can check out its branch; only hand off already-merged intent.
+    const external = describeExternalRelease(
+      process.cwd(),
+      loadConfig(process.cwd()).config,
+      {},
+    );
+    if (
+      external.action === "release-ready" ||
+      external.action === "release-waiting"
+    )
+      externalAtStart = external;
+  }
   const logger = flags.json ? undefined : console;
+  if (command === "ci") {
+    const decision = evaluateCi();
+    if (flags.json) {
+      emitJson(decision);
+    } else {
+      console.log(decision.message);
+    }
+    return 0;
+  }
   if (!command || command === "run") {
     if (loadConfig(process.cwd()).config["review-mode"] === "direct") {
       const release = await runDirectRelease(process.cwd(), {
@@ -368,6 +473,12 @@ async function main(): Promise<number> {
       if (flags.json) {
         emitJson({
           action: release.action,
+          externalReleaseTargets:
+            "externalReleaseTargets" in release
+              ? release.externalReleaseTargets
+              : undefined,
+          releaseReady:
+            "releaseReady" in release ? release.releaseReady : undefined,
           message,
           releaseCreated:
             release.action === "release-published" &&
@@ -403,6 +514,13 @@ async function main(): Promise<number> {
         logger,
         "dry-run": flags["dry-run"],
       });
+      if (
+        release.action === "release-ready" ||
+        release.action === "release-waiting"
+      ) {
+        printExternalRelease(release, flags);
+        return 0;
+      }
       if (release.action === "release-skipped") {
         if (flags.json) {
           emitJson({
@@ -420,6 +538,8 @@ async function main(): Promise<number> {
         if (flags.json) {
           emitJson({
             action: "release-dry-run",
+            externalReleaseTargets: release.externalReleaseTargets,
+            releaseReady: false,
             message: release.message,
             releaseCreated: false,
             tagNames: release.targets.map((target) => target.tag),
@@ -445,6 +565,8 @@ async function main(): Promise<number> {
         const primary = reviewRequests[0];
         emitJson({
           action: "release-published",
+          externalReleaseTargets: release.externalReleaseTargets,
+          releaseReady: release.releaseReady,
           message: release.message,
           releaseCreated: release.releases.length > 0,
           tagNames: release.releases.map((target) => target.tag),
@@ -718,6 +840,7 @@ async function main(): Promise<number> {
     "  run [--json] [--dry-run]  Auto-dispatch release PR/update or release publish by context",
   );
   console.log("  verify  Validate config and basic repository shape");
+  console.log("  ci [--json]  Decide whether CI should run checks");
   console.log("  plan    Print release plan");
   console.log(
     '  exclude <sha> [--reason "..."]  Exclude a commit from release analysis and notes',

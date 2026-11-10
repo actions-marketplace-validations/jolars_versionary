@@ -3,6 +3,16 @@ import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { appendFileSync, readFileSync } from "node:fs";
 
+function isReleaseCommitMessage(commitMessage) {
+  if (/^Versionary-Release:\s*true$/imu.test(commitMessage)) {
+    return true;
+  }
+  const subject = commitMessage.split("\n")[0]?.trim() ?? "";
+  return /^chore\(release\):\s+(?:(?:v\d+\.\d+\.\d+|\S+-v\d+\.\d+\.\d+)(?:,\s+(?:v\d+\.\d+\.\d+|\S+-v\d+\.\d+\.\d+))*|(?:v\d+\.\d+\.\d+|\S+-v\d+\.\d+\.\d+)\s+\(\+\d+\s+more\))(?:\s+\(#\d+\))?$/u.test(
+    subject,
+  );
+}
+
 function getInput(name) {
   const canonical = `INPUT_${name.replace(/ /g, "_").toUpperCase()}`;
   const underscoreAlias = canonical.replace(/-/g, "_");
@@ -49,10 +59,10 @@ function getRemoteRefSha(cwd, ref) {
     return null;
   }
 }
-function hasVersionaryReleaseMarker(cwd, sha) {
+function isReleaseCommit(cwd, sha) {
   try {
     const message = runGit(cwd, ["show", "-s", "--format=%B", sha]);
-    return /^Versionary-Release:\s*true$/imu.test(message);
+    return isReleaseCommitMessage(message);
   } catch {
     return false;
   }
@@ -96,15 +106,54 @@ function skipRun(action, message) {
   setOutput("action", action);
   setOutput("message", message);
   setOutput("release_created", "false");
+  setOutput("release_ready", "false");
   setOutput("tag_name", "");
   setOutput("tag_names", "[]");
   setOutput("release_targets", "[]");
+  setOutput("external_release_targets", "[]");
   setOutput("review_url", "");
   setOutput("review_requests", "[]");
   setOutput("branch", "");
   setOutput("title", "");
 }
+function runCi() {
+  const cwd = getInput("working-directory") || ".";
+  const version = getInput("versionary-version") || "0.7.0";
+  const raw = execFileSync(
+    "npx",
+    ["--yes", `versionary@${version}`, "ci", "--json"],
+    { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
+  ).trim();
+  let payload;
+  try {
+    payload = JSON.parse(raw);
+  } catch {
+    throw new Error("Failed parsing Versionary CI JSON output.");
+  }
+  if (
+    payload?.action !== "ci-evaluated" ||
+    typeof payload.runChecks !== "boolean" ||
+    typeof payload.isReleasePr !== "boolean"
+  ) {
+    throw new Error("Versionary returned an invalid CI decision.");
+  }
+  process.stdout.write(`${raw}\n`);
+  setOutput("action", payload.action);
+  setOutput("message", payload.message ?? "");
+  setOutput("run_checks", String(payload.runChecks));
+  setOutput("is_release_pr", String(payload.isReleasePr));
+}
 function main() {
+  const command = getInput("command") || "run";
+  if (command === "ci") {
+    runCi();
+    return;
+  }
+  if (command !== "run") {
+    throw new Error(
+      `Unsupported command "${command}". Expected "run" or "ci".`,
+    );
+  }
   const token = getInput("token");
   if (!token) {
     if (isForkRepository()) {
@@ -158,7 +207,7 @@ function main() {
       // Descendant pushes must not turn an otherwise valid release into a
       // recovery cycle.
       const releaseCanPublish =
-        hasVersionaryReleaseMarker(cwd, sha) && isAncestor(cwd, sha, remoteSha);
+        isReleaseCommit(cwd, sha) && isAncestor(cwd, sha, remoteSha);
       if (!releaseCanPublish) {
         skipRun(
           "stale-run-skipped",
@@ -199,16 +248,33 @@ function main() {
     : [];
   const firstTag = tagNames[0] ?? "";
   const releaseCreated =
-    payload.releaseCreated === true || tagNames.length > 0 ? "true" : "false";
+    (payload.releaseCreated ?? tagNames.length > 0) ? "true" : "false";
   setOutput("action", payload.action ?? "");
   setOutput("message", payload.message ?? "");
   setOutput("release_created", releaseCreated);
+  setOutput(
+    "release_ready",
+    (payload.releaseReady ?? payload.action === "release-ready")
+      ? "true"
+      : "false",
+  );
   setOutput("tag_name", firstTag);
   setOutput("tag_names", JSON.stringify(tagNames));
   setOutput(
     "release_targets",
     JSON.stringify(
       Array.isArray(payload.releaseTargets) ? payload.releaseTargets : [],
+    ),
+  );
+  setOutput(
+    "external_release_targets",
+    JSON.stringify(
+      Array.isArray(payload.externalReleaseTargets)
+        ? payload.externalReleaseTargets
+        : payload.action === "release-ready" ||
+            payload.action === "release-waiting"
+          ? (payload.releaseTargets ?? [])
+          : [],
     ),
   );
   setOutput("review_url", payload.reviewUrl ?? "");

@@ -10,11 +10,15 @@ import {
 import { resolveVersionStrategy } from "../strategy/resolve.js";
 import type { VersionaryConfig } from "../types/config.js";
 import type { VersionaryPluginContext } from "../types/plugins.js";
+import { hasManagedReleaseMode, resolveTargetReleaseMode } from "./mode.js";
 import { getChangelogDefaults } from "./plan.js";
 import { isReleaseCommitMessage } from "./pr.js";
 import { executeIdempotentReleaseTarget } from "./recovery.js";
 import {
+  hasLocalTag,
   hasReleaseStateChangeAtHead,
+  readExternalReleaseTargets,
+  readExternalReleaseWaitPaths,
   readPendingReleaseTargets,
   readRecordedPendingReleaseTargets,
 } from "./state.js";
@@ -92,7 +96,9 @@ export function extractReleaseNotes(
         })
       : lines.findIndex(
           (line) =>
-            line.startsWith(`## ${version} -`) ||
+            new RegExp(`^##\\s+${escapeRegExp(version)}(?:\\s|$)`, "u").test(
+              line,
+            ) ||
             line.startsWith(`## [${version}](`) ||
             line.startsWith(`# ${shortVersion} -`) ||
             line.startsWith(`# [${shortVersion}](`) ||
@@ -223,11 +229,12 @@ export async function runRelease(cwd = process.cwd()): Promise<string> {
   return result.message;
 }
 
-export type RunReleaseResult =
+export type RunReleaseResult = (
   | {
       action: "release-skipped";
       reason: string;
     }
+  | ExternalReleaseResult
   | {
       action: "release-dry-run";
       message: string;
@@ -257,7 +264,85 @@ export type RunReleaseResult =
         version: string;
         dependencies: string[];
       }[];
+    }
+) & {
+  releaseReady?: boolean;
+  externalReleaseTargets?: ExternalReleaseResult["releaseTargets"];
+};
+
+export type ExternalReleaseResult = {
+  message: string;
+  releaseTargets: {
+    path: string;
+    tag: string;
+    version: string;
+    dependencies: string[];
+    sha: string;
+    notes: string;
+  }[];
+} & ({ action: "release-ready" } | { action: "release-waiting" });
+
+export function describeExternalRelease(
+  cwd: string,
+  config: VersionaryConfig,
+  options: RunReleaseOptions,
+): RunReleaseResult {
+  const targets = readExternalReleaseTargets(cwd);
+  if (targets.length === 0) {
+    return {
+      action: "release-skipped",
+      reason: "No untagged external release targets found.",
     };
+  }
+  const head = execFileSync("git", ["rev-parse", "HEAD"], {
+    cwd,
+    encoding: "utf8",
+  }).trim();
+  const strategy = resolveVersionStrategy(config);
+  const { changelogFile } = getChangelogDefaults({
+    ...config,
+    defaultChangelogFormat: strategy.getDefaultChangelogFormat?.(),
+  });
+  const releaseTargets = releaseTargetHandoff(targets, options.logger).map(
+    (target) => {
+      const file = resolveTargetChangelogFile(
+        config,
+        changelogFile,
+        target.path,
+      );
+      const content = execFileSync("git", ["show", `${target.sha}:${file}`], {
+        cwd,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      const notes = extractReleaseNotes(
+        content,
+        target.version,
+        resolveTargetChangelogFormat(config, target.path),
+      );
+      if (!notes) {
+        throw new Error(
+          `No release notes for ${target.tag} in ${file} at ${target.sha}. Correct the release PR before handing it to external tooling.`,
+        );
+      }
+      return { ...target, notes };
+    },
+  );
+  const ready = targets.some((target) => target.sha === head);
+  if (options["dry-run"]) {
+    return {
+      action: "release-dry-run",
+      message: `Dry run: would hand off external releases ${targets.map((target) => target.tag).join(", ")}`,
+      targets: targets.map(({ tag, version }) => ({ tag, version })),
+      releaseTargets,
+    };
+  }
+  return {
+    action: ready ? "release-ready" : "release-waiting",
+    message: `${ready ? "Ready for external release" : "Waiting for external release"}: ${targets.map((target) => target.tag).join(", ")}`,
+    releaseTargets,
+  };
+}
 
 export interface RunReleaseOptions {
   logger?: VersionaryPluginContext["logger"];
@@ -268,6 +353,31 @@ export async function runReleaseDetailed(
   cwd = process.cwd(),
   options: RunReleaseOptions = {},
 ): Promise<RunReleaseResult> {
+  const loaded = loadConfig(cwd);
+  const external = describeExternalRelease(cwd, loaded.config, options);
+  if (!hasManagedReleaseMode(loaded.config)) return external;
+  const waitingPaths = readExternalReleaseWaitPaths(cwd);
+  const managed = (target: { path: string }) =>
+    resolveTargetReleaseMode(loaded.config, target.path) === "versionary" &&
+    !waitingPaths.has(target.path);
+  const pendingManaged = readPendingReleaseTargets(cwd).filter(
+    (target) => managed(target) && !hasLocalTag(cwd, target.tag),
+  );
+  if (pendingManaged.length === 0 && external.action !== "release-skipped")
+    return external;
+  const externalHandoff =
+    external.action === "release-ready" || external.action === "release-waiting"
+      ? {
+          externalReleaseTargets: external.releaseTargets,
+          releaseReady: external.action === "release-ready",
+        }
+      : external.action === "release-dry-run"
+        ? {
+            externalReleaseTargets:
+              external.releaseTargets as ExternalReleaseResult["releaseTargets"],
+            releaseReady: false,
+          }
+        : {};
   const commitMessage = getHeadCommitMessage(cwd);
   if (
     !isReleaseCommitMessage(commitMessage) &&
@@ -279,7 +389,6 @@ export async function runReleaseDetailed(
     };
   }
 
-  const loaded = loadConfig(cwd);
   const strategy = resolveVersionStrategy(loaded.config);
   const { changelogFile } = getChangelogDefaults({
     ...loaded.config,
@@ -287,7 +396,7 @@ export async function runReleaseDetailed(
   });
   const referenceCommentMode =
     loaded.config["release-reference-comments"] ?? "off";
-  const releaseTargets = readPendingReleaseTargets(cwd);
+  const releaseTargets = readPendingReleaseTargets(cwd).filter(managed);
   if (loaded.config["separate-release-prs"] && releaseTargets.length === 0) {
     return {
       action: "release-skipped",
@@ -302,7 +411,16 @@ export async function runReleaseDetailed(
   const recordedTargets =
     releaseTargets.length > 0
       ? releaseTargets
-      : readRecordedPendingReleaseTargets(cwd);
+      : readRecordedPendingReleaseTargets(cwd).filter(managed);
+  if (
+    recordedTargets.length === 0 &&
+    readRecordedPendingReleaseTargets(cwd).length > 0
+  ) {
+    return {
+      action: "release-skipped",
+      reason: "No Versionary-managed release targets found.",
+    };
+  }
   const version =
     recordedTargets.length === 0
       ? strategy.readVersion(cwd, loaded.config)
@@ -330,6 +448,7 @@ export async function runReleaseDetailed(
         version: target.version,
       })),
       releaseTargets: releaseTargetPlan,
+      ...externalHandoff,
       message: `Dry run: would publish releases ${targetList.join(", ")}`,
     };
   }
@@ -428,6 +547,7 @@ export async function runReleaseDetailed(
   );
   return {
     action: "release-published",
+    ...externalHandoff,
     releases,
     releaseTargets: releaseTargetPlan,
     message: `Published releases ${published.join(", ")}`,

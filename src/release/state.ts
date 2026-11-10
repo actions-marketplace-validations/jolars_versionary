@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { loadConfig } from "../config/load-config.js";
+import { resolveTargetReleaseMode } from "./mode.js";
 
 const MANIFEST_VERSION_KEY = "manifest-version";
 const BASELINE_SHA_KEY = "baseline-sha";
@@ -239,6 +240,101 @@ export function readPendingReleaseTargets(
   }).flatMap((cohort) => cohort.targets);
 }
 
+export function readPendingExternalReleaseTargets(
+  cwd = process.cwd(),
+): ReleaseTargetState[] {
+  const { config } = loadConfig(cwd);
+  return readPendingReleaseTargets(cwd).filter(
+    (target) =>
+      resolveTargetReleaseMode(config, target.path) === "external" &&
+      !hasLocalTag(cwd, target.tag),
+  );
+}
+
+export function readExternalReleaseWaitPaths(cwd = process.cwd()): Set<string> {
+  const targets = readPendingReleaseTargets(cwd);
+  const waiting = new Set(
+    readPendingExternalReleaseTargets(cwd).map((target) => target.path),
+  );
+  for (let iteration = 0; iteration < targets.length; iteration += 1) {
+    for (const target of targets) {
+      if (
+        !hasLocalTag(cwd, target.tag) &&
+        target.dependencies?.some((dependency) => waiting.has(dependency))
+      ) {
+        waiting.add(target.path);
+      }
+    }
+  }
+  return waiting;
+}
+
+export function readExternalReleaseTargets(
+  cwd = process.cwd(),
+): (ReleaseTargetState & { sha: string })[] {
+  return readPendingExternalReleaseTargets(cwd).map((target) => {
+    const sidecar = path.join(
+      getPackageStateDirectory(cwd),
+      packageStateFileName(target.path),
+    );
+    const statePath = fs.existsSync(sidecar)
+      ? sidecar
+      : getBaselineStatePath(cwd);
+    const relativePath = path.relative(cwd, statePath);
+    const identity = (raw: string): string | null => {
+      const state = fs.existsSync(sidecar)
+        ? parsePackageStateFile(raw, statePath)
+        : parseStateFile(raw, statePath);
+      const recorded =
+        "release-target" in state
+          ? state["release-target"]
+          : state[PENDING_RELEASE_TARGETS_KEY]?.find(
+              (entry) => entry.path === target.path,
+            );
+      return recorded
+        ? JSON.stringify([
+            state[BASELINE_SHA_KEY],
+            recorded.path,
+            recorded.version,
+            recorded.tag,
+          ])
+        : null;
+    };
+    const expected = identity(fs.readFileSync(statePath, "utf8"));
+    // Walk the current intent back to its introduction on trunk. Formatting
+    // release state after merging must not move an in-flight registration.
+    const commits = execFileSync(
+      "git",
+      ["log", "--first-parent", "--format=%H", "--", relativePath],
+      { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
+    )
+      .trim()
+      .split("\n")
+      .filter(Boolean);
+    let sha = "";
+    for (const commit of commits) {
+      let raw: string;
+      try {
+        raw = execFileSync("git", ["show", `${commit}:${relativePath}`], {
+          cwd,
+          encoding: "utf8",
+          stdio: ["ignore", "pipe", "pipe"],
+        });
+      } catch {
+        break;
+      }
+      if (identity(raw) !== expected) break;
+      sha = commit;
+    }
+    if (!sha) {
+      throw new Error(
+        `External release ${target.tag} requires committed release state. Merge the release PR before requesting registration.`,
+      );
+    }
+    return { ...target, sha };
+  });
+}
+
 // Every target the release state records, including cohorts whose tags already
 // exist. `release` needs these to tell "this repo never recorded a release"
 // apart from "this release was already published"; only the former may fall
@@ -255,24 +351,57 @@ export function readRecordedPendingReleaseTargets(
 export function readPendingReleaseCohorts(
   cwd = process.cwd(),
 ): PendingReleaseCohort[] {
-  return collectPendingReleaseCohorts(cwd, {});
+  return collectPendingReleaseCohorts(cwd, {
+    excludeExternal: true,
+    excludedPaths: readExternalReleaseWaitPaths(cwd),
+  });
 }
 
 function collectPendingReleaseCohorts(
   cwd: string,
   options: {
+    excludeExternal?: boolean;
+    excludedPaths?: Set<string>;
     allowPartiallyTagged?: boolean;
     includeFullyTagged?: boolean;
   },
 ): PendingReleaseCohort[] {
+  const { config } = loadConfig(cwd);
   const filePath = getBaselineStatePath(cwd);
   const packageStates = readPackageStates(cwd);
   const sidecarPaths = new Set(packageStates.map((state) => state.path));
-  const byBranch = new Map<string, ReleaseTargetState[]>();
+  // A branch can be reused after only part of its original package set changes.
+  // The baseline separates completed releases from the next release on it.
+  const byBranch = new Map<
+    string,
+    Map<string | undefined, ReleaseTargetState[]>
+  >();
+  const addTargets = (
+    branch: string,
+    baselineSha: string | undefined,
+    targets: ReleaseTargetState[],
+  ): void => {
+    if (options.excludeExternal) {
+      targets = targets.filter(
+        (target) =>
+          resolveTargetReleaseMode(config, target.path) === "versionary" &&
+          !options.excludedPaths?.has(target.path),
+      );
+    }
+    if (targets.length === 0) return;
+    const byBaseline =
+      byBranch.get(branch) ??
+      new Map<string | undefined, ReleaseTargetState[]>();
+    byBaseline.set(baselineSha, [
+      ...(byBaseline.get(baselineSha) ?? []),
+      ...targets,
+    ]);
+    byBranch.set(branch, byBaseline);
+  };
   for (const state of packageStates) {
-    const targets = byBranch.get(state["release-branch"]) ?? [];
-    targets.push(state["release-target"]);
-    byBranch.set(state["release-branch"], targets);
+    addTargets(state["release-branch"], state[BASELINE_SHA_KEY], [
+      state["release-target"],
+    ]);
   }
   if (fs.existsSync(filePath)) {
     const parsed = parseStateFile(fs.readFileSync(filePath, "utf8"), filePath);
@@ -282,39 +411,50 @@ function collectPendingReleaseCohorts(
     if (legacyPending.length > 0) {
       const branch =
         loadConfig(cwd).config["release-branch"] ?? "versionary/release";
-      byBranch.set(branch, [...(byBranch.get(branch) ?? []), ...legacyPending]);
+      addTargets(branch, parsed[BASELINE_SHA_KEY], legacyPending);
     }
   }
 
   const pending: PendingReleaseCohort[] = [];
-  for (const [branch, unsortedTargets] of byBranch) {
-    const targets = [...unsortedTargets].sort((a, b) =>
-      a.path.localeCompare(b.path),
-    );
-    const tagged = targets.filter((target) => hasLocalTag(cwd, target.tag));
-    if (tagged.length === targets.length && !options.includeFullyTagged) {
-      continue;
-    }
-    if (
-      tagged.length > 0 &&
-      tagged.length < targets.length &&
-      !options.allowPartiallyTagged
-    ) {
-      const existingTags = tagged.map((target) => target.tag).join(", ");
-      const missingTags = targets
-        .filter((target) => !tagged.includes(target))
-        .map((target) => target.tag)
-        .join(", ");
-      throw new Error(
-        `Pending release cohort on ${branch} is partially tagged and cannot move safely. Existing tags: ${existingTags}. Missing tags: ${missingTags}. Rerun the original release workflow to complete it.`,
+  for (const [branch, byBaseline] of byBranch) {
+    const targets: ReleaseTargetState[] = [];
+    for (const cohortTargets of byBaseline.values()) {
+      const tagged = cohortTargets.filter((target) =>
+        hasLocalTag(cwd, target.tag),
       );
+      if (
+        tagged.length === cohortTargets.length &&
+        !options.includeFullyTagged
+      ) {
+        continue;
+      }
+      if (
+        tagged.length > 0 &&
+        tagged.length < cohortTargets.length &&
+        !options.allowPartiallyTagged
+      ) {
+        const existingTags = tagged.map((target) => target.tag).join(", ");
+        const missingTags = cohortTargets
+          .filter((target) => !tagged.includes(target))
+          .map((target) => target.tag)
+          .join(", ");
+        throw new Error(
+          `Pending release cohort on ${branch} is partially tagged and cannot move safely. Existing tags: ${existingTags}. Missing tags: ${missingTags}. Rerun the original release workflow to complete it.`,
+        );
+      }
+      targets.push(...cohortTargets);
     }
-    pending.push({ branch, targets });
+    if (targets.length > 0) {
+      pending.push({
+        branch,
+        targets: targets.sort((a, b) => a.path.localeCompare(b.path)),
+      });
+    }
   }
   return pending.sort((a, b) => a.branch.localeCompare(b.branch));
 }
 
-function hasLocalTag(cwd: string, tag: string): boolean {
+export function hasLocalTag(cwd: string, tag: string): boolean {
   try {
     execFileSync(
       "git",

@@ -1,18 +1,23 @@
 name: Versionary Action
-description: Run Versionary release orchestration with machine-readable outputs
+description: Run Versionary release orchestration or evaluate which CI checks to run
 author: Johan Larsson
 branding:
   icon: git-branch
   color: gray-dark
 inputs:
+  command:
+    description: Command to run (run for releases, ci for read-only check selection)
+    required: false
+    default: run
   token:
-    description: GitHub token used by Versionary SCM integration. Required except
-      when skipping a fork without a token.
+    description: GitHub token used by release orchestration. Required for command
+      run except when skipping a fork without a token; not needed for command
+      ci.
     required: false
   versionary-version:
     description: Versionary npm version or dist-tag
     required: false
-    default: 1.7.1
+    default: 1.10.0
   working-directory:
     description: Working directory containing versionary.jsonc/json
     required: false
@@ -20,17 +25,28 @@ inputs:
 outputs:
   action:
     description: Versionary action taken (noop, fork-skipped, stale-run-skipped,
-      pr-prepared, release-published, release-skipped)
+      pr-prepared, release-published, release-ready, release-waiting,
+      release-skipped, ci-evaluated)
   message:
     description: Human-readable result message
+  run_checks:
+    description: Whether CI should run checks (command ci)
+  is_release_pr:
+    description: Whether the event is a Versionary release PR (command ci)
   release_created:
     description: Whether this run published at least one release
+  release_ready:
+    description: Whether this run has a release ready for external tooling
   tag_name:
     description: Primary release tag (first tag when multiple targets release)
   tag_names:
     description: JSON array of published release tags
+  external_release_targets:
+    description: JSON array of pending external release targets with commit SHAs and
+      reviewed notes
   release_targets:
-    description: Dependency-ordered JSON array of released package targets
+    description: Dependency-ordered JSON array of release targets; external targets
+      also include the merged commit SHA and release notes
   review_url:
     description: Primary review request URL when release PRs were prepared
   review_requests:

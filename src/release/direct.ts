@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { loadConfig } from "../config/load-config.js";
+import { hasExternalReleaseMode } from "./mode.js";
 import { createReleasePlan } from "./plan.js";
 import {
   buildReleaseTargets,
@@ -15,6 +16,7 @@ import {
 import {
   hasFullyUntaggedPendingRelease,
   hasReleaseStateChangeAtHead,
+  readExternalReleaseTargets,
   readPendingReleaseTargets,
 } from "./state.js";
 import { releaseTargetHandoff } from "./targets.js";
@@ -69,7 +71,16 @@ export async function runDirectRelease(
     isReleaseCommitMessage(git(cwd, "log", "-1", "--pretty=%B")) ||
     hasReleaseStateChangeAtHead(cwd);
   if (!releaseContext) {
+    const external = hasExternalReleaseMode(loadConfig(cwd).config);
     const pending = hasFullyUntaggedPendingRelease(cwd);
+    if (
+      external &&
+      !pending &&
+      readExternalReleaseTargets(cwd).length > 0 &&
+      !createReleasePlan(cwd).nextVersion
+    ) {
+      return runReleaseDetailed(cwd, options);
+    }
     const plan = pending ? undefined : createReleasePlan(cwd);
     if (plan && !plan.nextVersion) {
       return {
@@ -83,7 +94,7 @@ export async function runDirectRelease(
         : readPendingReleaseTargets(cwd);
       return {
         action: "release-dry-run",
-        message: `Dry run: would ${pending ? "recover and publish" : "prepare and publish"} releases ${targets.map((target) => target.tag).join(", ")}`,
+        message: `Dry run: would ${external ? "prepare external" : pending ? "recover and publish" : "prepare and publish"} releases ${targets.map((target) => target.tag).join(", ")}`,
         targets: targets.map(({ tag, version }) => ({ tag, version })),
         releaseTargets: releaseTargetHandoff(targets, options.logger),
       };
